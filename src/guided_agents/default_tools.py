@@ -17,8 +17,7 @@
 #
 # Copyright 2025 g-eoj
 import re
-from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Optional
 
 from .local_python_executor import (
     BASE_BUILTIN_MODULES,
@@ -226,8 +225,6 @@ class VisitWebpageTool(Tool):
             from bs4 import BeautifulSoup, SoupStrainer
             from markdownify import markdownify
             from requests.exceptions import RequestException
-
-            from guided_agents.utils import truncate_content
         except ImportError as e:
             raise ImportError(
                 "You must install packages `markdownify` and `requests` to run this tool: for instance run `pip install markdownify requests`."
@@ -253,7 +250,6 @@ class VisitWebpageTool(Tool):
             markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
 
             return markdown_content
-            #return truncate_content(markdown_content, 10000)
 
         except requests.exceptions.Timeout:
             return "The request timed out. Please try again later or check the URL."

@@ -18,24 +18,10 @@ import ast
 import inspect
 import json
 import logging
-import os
 import sys
-import tempfile
 import textwrap
-import types
-from contextlib import contextmanager
 from functools import wraps
-from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
-
-from huggingface_hub import (
-    create_repo,
-    get_collection,
-    hf_hub_download,
-    metadata_update,
-    upload_folder,
-)
-from huggingface_hub.utils import is_torch_available
+from typing import Callable, Dict, Union
 
 from ._function_type_hints_utils import (
     TypeHintParsingException,
@@ -45,7 +31,7 @@ from ._function_type_hints_utils import (
 )
 from .agent_types import handle_agent_input_types, handle_agent_output_types
 from .tool_validation import MethodChecker, validate_tool_attributes
-from .utils import _is_package_available, _is_pillow_available, get_source, instance_to_source
+from .utils import get_source, instance_to_source
 
 
 logger = logging.getLogger(__name__)

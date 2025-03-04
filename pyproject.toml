@@ -7,70 +7,30 @@ name = "guided_agents"
 version = "0.0.0.dev0"
 requires-python = ">=3.10"
 dependencies = [
-  "huggingface-hub>=0.28.0",
-  "requests>=2.32.3",
-  "rich>=13.9.4",
-  "pandas>=2.2.3",
-  "jinja2>=3.1.4",
-  "pillow>=11.0.0",
-  "markdownify>=0.14.1",
-  "duckduckgo-search>=6.3.7",
-  "python-dotenv",
-  "outlines>=0.2.1",
-  "mlx-lm>=0.21.5",
   "datasets>=3.3.2",
-  "python-docx>=1.1.2",
+  "huggingface-hub>=0.28.0",
+  "pillow>=11.0.0",
+  "jinja2>=3.1.4",
+  "rich>=13.9.4",
 ]
 
 [project.optional-dependencies]
-torch = [
-  "torch",
-  "torchvision",
+models = [
+  "mlx-lm",
+  "mlx-vlm",
+  "openai",
+  "outlines",
 ]
-audio = [
-  "soundfile",
-  "guided_agents[torch]",
+tools = [
+  "duckduckgo-search",
+  "markdownify",
+  "openpyxl",
+  "pandas",
+  "pdf2image",
+  "python-docx",
+  "requests",
+  "tabulate",
 ]
-docker = [
-  "docker",
-  "python-dotenv>=1.0.1",
-]
-mcp = [
-  "mcpadapt>=0.0.6",
-  "mcp",
-]
-mlx-lm = [
-  "mlx-lm"
-]
-openai = [
-  "openai>=1.58.1"
-]
-transformers = [
-  "accelerate",
-  "transformers>=4.0.0,<4.49.0",
-  "guided_agents[torch]",
-]
-all = [
-  "guided_agents[audio,e2b,gradio,litellm,mcp,openai,outlines,transformers]",
-]
-quality = [
-  "ruff>=0.9.0",
-]
-test = [
-  "ipython>=8.31.0", # for interactive environment tests
-  "pytest>=8.1.0",
-  "python-dotenv>=1.0.1", # For test_all_docs
-  "guided_agents[all]",
-  "rank-bm25", # For test_all_docs
-]
-dev = [
-  "guided_agents[quality,test]",
-  "sqlalchemy", # for ./examples
-]
-
-[tool.pytest.ini_options]
-# Add the specified `OPTS` to the set of command line arguments as if they had been specified by the user.
-addopts = "-sv --durations=0"
 
 [tool.ruff]
 line-length = 119
@@ -80,13 +40,8 @@ lint.ignore = [
 ]
 lint.select = ["E", "F", "I", "W"]
 
-[tool.ruff.lint.per-file-ignores]
-"examples/*" = [
-  "E402", # module-import-not-at-top-of-file
-]
-
 [tool.ruff.lint.isort]
-known-first-party = ["guided_agents "]
+known-first-party = ["guided_agents"]
 lines-after-imports = 2
 
 [tool.setuptools.package-data]

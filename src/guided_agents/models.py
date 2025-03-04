@@ -19,17 +19,11 @@
 import abc
 import json
 import logging
-import os
-import random
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
-
-from huggingface_hub import InferenceClient
-from huggingface_hub.utils import is_torch_available
-from PIL import Image
 
 from .tools import Tool
 from .utils import _is_package_available, encode_image_base64, make_image_url
@@ -38,7 +32,6 @@ from .utils import _is_package_available, encode_image_base64, make_image_url
 if TYPE_CHECKING:
     import mlx.core as mx
     import mlx_lm
-    from transformers import StoppingCriteriaList
 
 logger = logging.getLogger(__name__)
 
@@ -532,7 +525,7 @@ class MLXModel(Model):
         # completion_kwargs post-process steps needed for mlx-lm
         messages = completion_kwargs.pop("messages")
         prepared_stop_sequences = completion_kwargs.pop("stop", [])
-        tools = completion_kwargs.pop("tools", None)
+        completion_kwargs.pop("tools", None)
         completion_kwargs.pop("tool_choice", None)
         guide = completion_kwargs.pop("guide", None)
         if guide:

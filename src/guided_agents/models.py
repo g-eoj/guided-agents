@@ -546,8 +546,8 @@ class MLXModel(Model):
             add_generation_prompt=True,
         )
 
-        print()
-        print(self.tokenizer.decode(prompt_ids))
+        #print()
+        #print(self.tokenizer.decode(prompt_ids))
 
         self.last_input_token_count = len(prompt_ids)
         self.last_output_token_count = 0

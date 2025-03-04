@@ -73,7 +73,7 @@ class PythonInterpreterTool(Tool):
 class FinalAnswerTool(Tool):
     name = "final_answer"
     description = "Provides a final answer to the given task. After using this tool the task will be complete."
-    inputs = {"answer": {"type": "string", "description": "The final answer to the task"}}
+    inputs = {"answer": {"type": "string", "description": "The final answer to the task."}}
     output_type = "string"
 
     def forward(self, answer: str) -> str:

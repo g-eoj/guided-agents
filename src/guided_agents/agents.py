@@ -150,7 +150,7 @@ class MultiStepAgent:
         tool_parser (`Callable`, *optional*): Function used to parse the tool calls from the LLM output.
         add_base_tools (`bool`, default `False`): Whether to add the base tools to the agent's tools.
         verbosity_level (`LogLevel`, default `LogLevel.INFO`): Level of verbosity of the agent's logs.
-        grammar (`dict[str, str]`, *optional*): Grammar used to parse the LLM output.
+        guide (`dict[str, str]`, *optional*): Grammar used to parse the LLM output.
         managed_agents (`list`, *optional*): Managed agents that the agent can call.
         step_callbacks (`list[Callable]`, *optional*): Callbacks that will be called at each step.
         name (`str`, *optional*): Necessary for a managed agent only - the name by which this agent can be called.
@@ -168,7 +168,7 @@ class MultiStepAgent:
         tool_parser: Optional[Callable] = None,
         add_base_tools: bool = False,
         verbosity_level: LogLevel = LogLevel.INFO,
-        grammar: Optional[Dict[str, str]] = None,
+        guide: Optional[Dict[str, str]] = None,
         managed_agents: Optional[List] = None,
         step_callbacks: Optional[List[Callable]] = None,
         name: Optional[str] = None,
@@ -182,7 +182,7 @@ class MultiStepAgent:
         self.max_steps = max_steps
         self.step_number = 0
         self.tool_parser = tool_parser or parse_json_tool_call
-        self.grammar = grammar
+        self.guide = guide
         self.state = {}
         self.name = name
         self.description = description
@@ -682,7 +682,7 @@ You have been provided with these additional arguments, that you can access usin
             "prompt_templates": self.prompt_templates,
             "max_steps": self.max_steps,
             "verbosity_level": int(self.logger.level),
-            "grammar": self.grammar,
+            "guide": self.guide,
             "name": self.name,
             "description": self.description,
             "requirements": list(requirements),
@@ -781,7 +781,7 @@ You have been provided with these additional arguments, that you can access usin
             name=agent_dict["name"],
             description=agent_dict["description"],
             max_steps=agent_dict["max_steps"],
-            grammar=agent_dict["grammar"],
+            guide=agent_dict["guide"],
             verbosity_level=agent_dict["verbosity_level"],
         )
         if cls.__name__ == "CodeAgent":
@@ -897,7 +897,7 @@ class ToolCallingAgent(MultiStepAgent):
         try:
             model_message: ChatMessage = self.model(
                 memory_messages,
-                grammar=self.grammar,
+                guide=self.guide,
                 tools_to_call_from=list(self.tools.values()),
                 stop_sequences=["Observation:"],
             )
@@ -921,6 +921,7 @@ class ToolCallingAgent(MultiStepAgent):
             raise AgentGenerationError(e, self.logger) from e
 
         memory_step.tool_calls = [ToolCall(name=tool_name, arguments=tool_arguments, id=tool_call_id)]
+        print(memory_step.tool_calls)
 
         # Execute
         self.logger.log(
@@ -989,7 +990,7 @@ class CodeAgent(MultiStepAgent):
         tools (`list[Tool]`): [`Tool`]s that the agent can use.
         model (`Callable[[list[dict[str, str]]], ChatMessage]`): Model that will generate the agent's actions.
         prompt_templates ([`~agents.PromptTemplates`], *optional*): Prompt templates.
-        grammar (`dict[str, str]`, *optional*): Grammar used to parse the LLM output.
+        guide (`dict[str, str]`, *optional*): Grammar used to parse the LLM output.
         additional_authorized_imports (`list[str]`, *optional*): Additional authorized imports for the agent.
         use_e2b_executor (`bool`, default `False`): Whether to use the E2B executor for remote code execution.
         max_print_outputs_length (`int`, *optional*): Maximum length of the print outputs.
@@ -1002,7 +1003,7 @@ class CodeAgent(MultiStepAgent):
         tools: List[Tool],
         model: Callable[[List[Dict[str, str]]], ChatMessage],
         prompt_templates: Optional[PromptTemplates] = None,
-        grammar: Optional[Dict[str, str]] = None,
+        guide: Optional[Dict[str, str]] = None,
         additional_authorized_imports: Optional[List[str]] = None,
         max_print_outputs_length: Optional[int] = None,
         **kwargs,
@@ -1017,7 +1018,7 @@ class CodeAgent(MultiStepAgent):
             tools=tools,
             model=model,
             prompt_templates=prompt_templates,
-            grammar=grammar,
+            guide=guide,
             **kwargs,
         )
         if "*" in self.additional_authorized_imports:
@@ -1064,9 +1065,9 @@ class CodeAgent(MultiStepAgent):
         # Add new step in logs
         memory_step.model_input_messages = memory_messages.copy()
         try:
-            additional_args = {"grammar": self.grammar} if self.grammar is not None else {}
+            additional_args = {"guide": self.guide} if self.guide is not None else {}
             if memory_step.is_final:
-                additional_args["grammar"] = r'Thought: ([^\.\n]+?\.){1,3}\nCode:\n```(?:py|python)?\nfinal_answer[^`]+?\n```<end_code>'
+                additional_args["guide"] = r'Thought: ([^\.\n]+?\.){1,3}\nCode:\n```(?:py|python)?\nfinal_answer[^`]+?\n```<end_code>'
             chat_message: ChatMessage = self.model(
                 self.input_messages,
                 stop_sequences=["<end_code>", "Observation:"],

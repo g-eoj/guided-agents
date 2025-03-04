@@ -244,7 +244,7 @@ class Model:
         self,
         messages: List[Dict[str, str]],
         stop_sequences: Optional[List[str]] = None,
-        grammar: Optional[str] = None,
+        guide: Optional[str] = None,
         tools_to_call_from: Optional[List[Tool]] = None,
         custom_role_conversions: Optional[Dict[str, str]] = None,
         convert_images_to_image_urls: bool = False,
@@ -256,7 +256,7 @@ class Model:
 
         Parameter priority from high to low:
         1. Explicitly passed kwargs
-        2. Specific parameters (stop_sequences, grammar, etc.)
+        2. Specific parameters (stop_sequences, guide, etc.)
         3. Default values in self.kwargs
         """
         # Clean and standardize the message list
@@ -276,8 +276,8 @@ class Model:
         # Handle specific parameters
         if stop_sequences is not None:
             completion_kwargs["stop"] = stop_sequences
-        if grammar is not None:
-            completion_kwargs["grammar"] = grammar
+        if guide is not None:
+            completion_kwargs["guide"] = guide
 
         # Handle tools parameter
         if tools_to_call_from:
@@ -303,7 +303,7 @@ class Model:
         self,
         messages: List[Dict[str, str]],
         stop_sequences: Optional[List[str]] = None,
-        grammar: Optional[str] = None,
+        guide: Optional[str] = None,
         tools_to_call_from: Optional[List[Tool]] = None,
         **kwargs,
     ) -> ChatMessage:
@@ -314,8 +314,8 @@ class Model:
                 A list of message dictionaries to be processed. Each dictionary should have the structure `{"role": "user/system", "content": "message content"}`.
             stop_sequences (`List[str]`, *optional*):
                 A list of strings that will stop the generation if encountered in the model's output.
-            grammar (`str`, *optional*):
-                The grammar or formatting structure to use in the model's response.
+            guide (`str`, *optional*):
+                The guide or formatting structure to use in the model's response.
             tools_to_call_from (`List[Tool]`, *optional*):
                 A list of tools that the model can use to generate responses.
             **kwargs:
@@ -375,7 +375,7 @@ class Model:
 
 
 class BaseMLXLogitsProcessor(abc.ABC):
-    """Enables the model to produce structured output through grammar or regex.
+    """Enables the model to produce structured output through guide or regex.
 
     This base class is meant to provide a structure for using logits processor libraries with MLXModels.
 
@@ -386,9 +386,9 @@ class BaseMLXLogitsProcessor(abc.ABC):
 
 
     class RegexLogitsProcessor(BaseMLXLogitsProcessor):
-        def __init__(self, grammar, tokenizer):
+        def __init__(self, guide, tokenizer):
             self._outlines_processor = outlines.processors.RegexLogitsProcessor(
-                regex_string=grammar,
+                regex_string=guide,
                 tokenizer=outlines.models.TransformerTokenizer(tokenizer)
             )
 
@@ -407,14 +407,14 @@ class BaseMLXLogitsProcessor(abc.ABC):
 
     CodeAgent(
         model=model,
-        grammar=r'Thought: ([^\\.\n]+?\\.){1,3}\nCode:\n```(?:py|python)?\n[^`]+?```<end_code>',
+        guide=r'Thought: ([^\\.\n]+?\\.){1,3}\nCode:\n```(?:py|python)?\n[^`]+?```<end_code>',
         tools=[],
     )
     ```
     """
 
     @abc.abstractmethod
-    def __init__(self, grammar: str, tokenizer: "mlx_lm.tokenizer_utils.TokenizerWrapper"):
+    def __init__(self, guide: str, tokenizer: "mlx_lm.tokenizer_utils.TokenizerWrapper"):
         pass
 
     @abc.abstractmethod
@@ -438,7 +438,7 @@ class MLXModel(Model):
         trust_remote_code (bool):
             Some models on the Hub require running remote code: for this model, you would have to set this flag to True.
         logits_processor (BaseMLXLogitsProcessor *optional*):
-            Structures model output based on a grammar argument to the model's call method.
+            Structures model output based on a guide argument to the model's call method.
         kwargs (dict, *optional*):
             Any additional keyword arguments that you want to use in model.generate(), for instance `max_tokens`.
 
@@ -517,7 +517,7 @@ class MLXModel(Model):
         self,
         messages: List[Dict[str, str]],
         stop_sequences: Optional[List[str]] = None,
-        grammar: Optional[str] = None,
+        guide: Optional[str] = None,
         tools_to_call_from: Optional[List[Tool]] = None,
         **kwargs,
     ) -> ChatMessage:
@@ -525,7 +525,7 @@ class MLXModel(Model):
             flatten_messages_as_text=True,  # mlx-lm doesn't support vision models
             messages=messages,
             stop_sequences=stop_sequences,
-            grammar=grammar,
+            guide=guide,
             tools_to_call_from=tools_to_call_from,
             **kwargs,
         )
@@ -534,11 +534,11 @@ class MLXModel(Model):
         prepared_stop_sequences = completion_kwargs.pop("stop", [])
         tools = completion_kwargs.pop("tools", None)
         completion_kwargs.pop("tool_choice", None)
-        grammar = completion_kwargs.pop("grammar", None)
-        if grammar:
+        guide = completion_kwargs.pop("guide", None)
+        if guide:
             if self.logits_processor is None:
-                raise ValueError("Please initialize the model with a logits processor to use grammar.")
-            completion_kwargs["logits_processors"] = [self.logits_processor(grammar=grammar, tokenizer=self.tokenizer)]
+                raise ValueError("Please initialize the model with a logits processor to use guide.")
+            completion_kwargs["logits_processors"] = [self.logits_processor(guide=guide, tokenizer=self.tokenizer)]
 
         prompt_ids = self.tokenizer.apply_chat_template(
             messages,
@@ -546,8 +546,8 @@ class MLXModel(Model):
             add_generation_prompt=True,
         )
 
-        #print()
-        #print(self.tokenizer.decode(prompt_ids))
+        print()
+        print(self.tokenizer.decode(prompt_ids))
 
         self.last_input_token_count = len(prompt_ids)
         self.last_output_token_count = 0
@@ -557,7 +557,7 @@ class MLXModel(Model):
             print(_.text, end="", flush=True)
             self.last_output_token_count += 1
             text += _.text
-            for stop_sequence in prepared_stop_sequences:
+            for stop_sequence in prepared_stop_sequences + [self.tokenizer.eos_token]:
                 stop_sequence_start = text.rfind(stop_sequence)
                 if stop_sequence_start != -1:
                     text = text[:stop_sequence_start]
@@ -622,14 +622,14 @@ class OpenAIServerModel(Model):
         self,
         messages: List[Dict[str, str]],
         stop_sequences: Optional[List[str]] = None,
-        grammar: Optional[str] = None,
+        guide: Optional[str] = None,
         tools_to_call_from: Optional[List[Tool]] = None,
         **kwargs,
     ) -> ChatMessage:
         completion_kwargs = self._prepare_completion_kwargs(
             messages=messages,
             stop_sequences=stop_sequences,
-            grammar=grammar,
+            guide=guide,
             tools_to_call_from=tools_to_call_from,
             model=self.model_id,
             custom_role_conversions=self.custom_role_conversions,
@@ -637,9 +637,9 @@ class OpenAIServerModel(Model):
             **kwargs,
         )
         extra_body={}
-        grammar = completion_kwargs.pop("grammar", None)
-        if grammar:
-            extra_body["guided_regex"] = grammar
+        guide = completion_kwargs.pop("guide", None)
+        if guide:
+            extra_body["guided_regex"] = guide
         if stop_sequences:
             extra_body["stop"] = stop_sequences
         if extra_body:

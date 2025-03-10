@@ -188,11 +188,6 @@ class AgentMemory:
     def reset(self):
         self.steps = []
 
-    def get_succinct_steps(self) -> list[dict]:
-        return [
-            {key: value for key, value in step.dict().items() if key != "model_input_messages"} for step in self.steps
-        ]
-
     def get_full_steps(self) -> list[dict]:
         return [step.dict() for step in self.steps]
 

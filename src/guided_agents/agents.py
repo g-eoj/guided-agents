@@ -18,15 +18,15 @@
 # Copyright 2025 g-eoj
 import importlib
 import inspect
-import re
 import time
 from collections import deque
 from logging import getLogger
-from typing import Any, Callable, Dict, Generator, List, Optional, Set, Tuple, TypedDict, Union
+from typing import Any, Callable, Dict, Generator, List, Optional, TypedDict, Union
 
 import yaml
 from jinja2 import StrictUndefined, Template
 from rich.console import Group
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.text import Text
 
@@ -34,7 +34,7 @@ from .agent_types import AgentAudio, AgentImage, AgentType, handle_agent_output_
 from .default_tools import FinalAnswerTool
 from .local_python_executor import (
     BASE_BUILTIN_MODULES,
-    LocalPythonInterpreter,
+    LocalPythonExecutor,
     fix_final_answer_code,
 )
 from .memory import ActionStep, AgentMemory, SystemPromptStep, TaskStep, ToolCall
@@ -59,11 +59,6 @@ from .utils import (
 
 
 logger = getLogger(__name__)
-
-
-def get_variable_names(self, template: str) -> Set[str]:
-    pattern = re.compile(r"\{\{([^{}]+)\}\}")
-    return {match.group(1).strip() for match in pattern.finditer(template)}
 
 
 def populate_template(template: str, variables: Dict[str, Any]) -> str:
@@ -145,7 +140,6 @@ class MultiStepAgent:
         provide_run_summary: bool = False,
         final_answer_checks: Optional[List[Callable]] = None,
     ):
-        self.agent_name = self.__class__.__name__
         self.model = model
         self.prompt_templates = prompt_templates or EMPTY_PROMPT_TEMPLATES
         self.max_steps = max_steps
@@ -250,6 +244,10 @@ You have been provided with these additional arguments, that you can access usin
 
         self.memory.steps.append(TaskStep(task=self.task, task_images=images))
 
+        if getattr(self, "python_executor", None):
+            self.python_executor.send_variables(variables=self.state)
+            self.python_executor.send_tools({**self.tools, **self.managed_agents})
+
         if stream:
             # The steps are returned as they are executed through a generator to iterate on.
             return self._run(task=self.task, max_steps=max_steps, images=images)
@@ -280,10 +278,9 @@ You have been provided with these additional arguments, that you can access usin
         return ActionStep(step_number=self.step_number, start_time=step_start_time, observations_images=images, is_final=is_final)
 
     def _execute_step(self, task: str, memory_step: ActionStep) -> Union[None, Any]:
-        prefix = ""
+        prefix = "brain "
         if self.name:
-            prefix = self.name + " - "
-        self.logger.log_rule(f"{prefix}step {self.step_number}", level=LogLevel.INFO)
+            prefix = self.name + " "
         final_answer = self.step(memory_step)
         if final_answer is not None and self.final_answer_checks:
             self._validate_final_answer(final_answer)
@@ -327,27 +324,6 @@ You have been provided with these additional arguments, that you can access usin
     def visualize(self):
         """Creates a rich tree visualization of the agent's structure."""
         self.logger.visualize_agent_tree(self)
-
-    def extract_action(self, model_output: str, split_token: str) -> Tuple[str, str]:
-        """
-        Parse action from the LLM output
-
-        Args:
-            model_output (`str`): Output of the LLM
-            split_token (`str`): Separator for the action. Should match the example in the system prompt.
-        """
-        try:
-            split = model_output.split(split_token)
-            rationale, action = (
-                split[-2],
-                split[-1],
-            )  # NOTE: using indexes starting from the end solves for when you have more than one split_token in the output
-        except Exception:
-            raise AgentParsingError(
-                f"No '{split_token}' token provided in your output.\nYour output:\n{model_output}\n. Be sure to include an action, prefaced with '{split_token}'!",
-                self.logger,
-            )
-        return rationale.strip(), action.strip()
 
     def execute_tool_call(self, tool_name: str, arguments: Union[Dict[str, str], str]) -> Any:
         """
@@ -514,40 +490,36 @@ class ToolCallingAgent(MultiStepAgent):
         # Add new step in logs
         memory_step.model_input_messages = memory_messages.copy()
 
-        try:
-            if memory_step.is_final and self.final_guide:
-                guide = self.final_guide
-            else:
-                guide = self.guide
-            model_message: ChatMessage = self.model(
-                memory_messages,
-                guide=guide,
-                tools_to_call_from=list(self.tools.values()),
-                stop_sequences=["Observation:"],
-            )
-            memory_step.model_output_message = model_message
-            model_output = model_message.content
-            memory_step.model_output = model_output
-            tool_call = model_message.tool_calls[0]
-            tool_name, tool_call_id = tool_call.function.name, tool_call.id
-            tool_arguments = tool_call.function.arguments
-            all_previous_tool_arguments = self.tool_call_history.get(tool_name, [])
-            if tool_arguments in all_previous_tool_arguments:
-                memory_step.observations = f"Try something different. You already tried '{tool_name}' with arguments: {tool_arguments}"
-                return None
-            all_previous_tool_arguments.append(tool_arguments)
-            self.tool_call_history[tool_name] = all_previous_tool_arguments
+        #try:
+        if memory_step.is_final and self.final_guide:
+            guide = self.final_guide
+        else:
+            guide = self.guide
+        model_message: ChatMessage = self.model(
+            memory_messages,
+            guide=guide,
+            tools_to_call_from=list(self.tools.values()),
+        )
+        memory_step.model_output_message = model_message
+        model_output = model_message.content
+        memory_step.model_output = model_output
+        print(model_output)
+        tool_call = model_message.tool_calls[0]
+        tool_name, tool_call_id = tool_call.function.name, tool_call.id
+        tool_arguments = tool_call.function.arguments
+        all_previous_tool_arguments = self.tool_call_history.get(tool_name, [])
+        if tool_arguments in all_previous_tool_arguments:
+            memory_step.observations = f"Try something different. You already tried '{tool_name}' with arguments: {tool_arguments}"
+            return None
+        all_previous_tool_arguments.append(tool_arguments)
+        self.tool_call_history[tool_name] = all_previous_tool_arguments
 
-        except Exception as e:
-            raise AgentGenerationError(e, self.logger) from e
+        #except Exception as e:
+        #    raise AgentGenerationError(e, self.logger) from e
 
         memory_step.tool_calls = [ToolCall(name=tool_name, arguments=tool_arguments, id=tool_call_id)]
 
         # Execute
-        self.logger.log(
-            Panel(Text(f"Calling: '{tool_name}' with arguments: {tool_arguments}")),
-            level=LogLevel.INFO,
-        )
         if tool_name == "final_answer":
             answer = None
             if isinstance(tool_arguments, dict):
@@ -570,7 +542,10 @@ class ToolCallingAgent(MultiStepAgent):
             else:
                 final_answer = answer
                 self.logger.log(
-                    Text(f"Final answer: {final_answer}", style=f"bold {YELLOW_HEX}"),
+                    Padding(
+                        Text(f"{final_answer}", style=f"bold {YELLOW_HEX}"),
+                        (0,0,2,2)
+                    ),
                     level=LogLevel.INFO,
                 )
 
@@ -596,7 +571,7 @@ class ToolCallingAgent(MultiStepAgent):
                     f"The answer from the thrall is: \"{str(observation).strip()}\""
                 )
             self.logger.log(
-                f"Observations: {updated_information.replace('[', '|')}",  # escape potential rich-tag-like components
+                Padding(observation, (1,0,0,2)),
                 level=LogLevel.INFO,
             )
             memory_step.observations = updated_information
@@ -648,9 +623,9 @@ class CodeAgent(MultiStepAgent):
                 0,
             )
         all_tools = {**self.tools, **self.managed_agents}
-        self.python_executor = LocalPythonInterpreter(
+        self.python_executor = LocalPythonExecutor(
             self.additional_authorized_imports,
-            all_tools,
+            #all_tools,
             max_print_outputs_length=max_print_outputs_length,
         )
 
@@ -723,12 +698,11 @@ class CodeAgent(MultiStepAgent):
         ]
 
         # Execute
-        self.logger.log_code(title="Executing parsed code:", content=code_action, level=LogLevel.INFO)
+        #self.logger.log_code(title="Executing parsed code:", content=code_action, level=LogLevel.INFO)
         is_final_answer = False
         try:
             output, execution_logs, is_final_answer = self.python_executor(
                 code_action,
-                self.state,
             )
             execution_outputs_console = []
             if len(execution_logs) > 0:

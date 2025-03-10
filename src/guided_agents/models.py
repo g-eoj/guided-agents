@@ -277,7 +277,7 @@ class Model:
             completion_kwargs.update(
                 {
                     "tools": [get_tool_json_schema(tool) for tool in tools_to_call_from],
-                    "tool_choice": "required",
+                    "tool_choice": "auto",
                 }
             )
 
@@ -530,7 +530,7 @@ class MLXModel(Model):
         guide = completion_kwargs.pop("guide", None)
         if guide:
             if self.logits_processor is None:
-                raise ValueError("Please initialize the model with a logits processor to use guide.")
+                raise ValueError("Please initialize the model with a logits processor to use a guide.")
             completion_kwargs["logits_processors"] = [self.logits_processor(guide=guide, tokenizer=self.tokenizer)]
 
         prompt_ids = self.tokenizer.apply_chat_template(
@@ -546,6 +546,7 @@ class MLXModel(Model):
         self.last_output_token_count = 0
         text = ""
 
+        print()
         for _ in self.stream_generate(self.model, self.tokenizer, prompt=prompt_ids, **completion_kwargs):
             print(_.text, end="", flush=True)
             self.last_output_token_count += 1
@@ -554,6 +555,7 @@ class MLXModel(Model):
                 stop_sequence_start = text.rfind(stop_sequence)
                 if stop_sequence_start != -1:
                     text = text[:stop_sequence_start]
+                    print()
                     return self._to_message(text, tools_to_call_from)
 
         return self._to_message(text, tools_to_call_from)
@@ -591,6 +593,8 @@ class OpenAIServerModel(Model):
         project: Optional[str] | None = None,
         client_kwargs: Optional[Dict[str, Any]] = None,
         custom_role_conversions: Optional[Dict[str, str]] = None,
+        tool_name_key: str = "name",
+        tool_arguments_key: str = "arguments",
         **kwargs,
     ):
         try:
@@ -610,6 +614,8 @@ class OpenAIServerModel(Model):
             **(client_kwargs or {}),
         )
         self.custom_role_conversions = custom_role_conversions
+        self.tool_name_key = tool_name_key
+        self.tool_arguments_key = tool_arguments_key
 
     def __call__(
         self,
@@ -637,17 +643,44 @@ class OpenAIServerModel(Model):
             extra_body["stop"] = stop_sequences
         if extra_body:
             completion_kwargs["extra_body"] = extra_body
-        response = self.client.chat.completions.create(**completion_kwargs)
-        self.last_input_token_count = response.usage.prompt_tokens
-        self.last_output_token_count = response.usage.completion_tokens
-
-        message = ChatMessage.from_dict(
-            response.choices[0].message.model_dump(include={"role", "content", "tool_calls"})
-        )
-        message.raw = response
-        if tools_to_call_from is not None:
-            return parse_tool_args_if_needed(message)
-        return message
+        completion_kwargs.pop("tool_choice", None)
+        completion_kwargs.pop("tools", None)
+        text = ""
+        response = self.client.chat.completions.create(**completion_kwargs, stream=True)
+        print()
+        for chunk in response:
+            _ = chunk.choices[0].delta.content
+            print(_, end="", flush=True)
+            text += _
+        print()
+        #self.last_input_token_count = response.usage.prompt_tokens
+        #self.last_output_token_count = response.usage.completion_tokens
+        tool_call_start = "Action:\n{"
+        if tools_to_call_from and tool_call_start in text:
+            # solution for extracting tool JSON without assuming a specific model output format
+            maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
+            try:
+                parsed_text = json.loads(maybe_json)
+            except json.JSONDecodeError as e:
+                text += f"\n\nTool JSON decode failure: {e}\n\n"
+                text += maybe_json
+                parsed_text = {}
+            finally:
+                tool_name = parsed_text.get(self.tool_name_key, None)
+                tool_arguments = parsed_text.get(self.tool_arguments_key, None)
+                if tool_name:
+                    return ChatMessage(
+                        role="assistant",
+                        content="",
+                        tool_calls=[
+                            ChatMessageToolCall(
+                                id=uuid.uuid4(),
+                                type="function",
+                                function=ChatMessageToolCallDefinition(name=tool_name, arguments=tool_arguments),
+                            )
+                        ],
+                    )
+        return ChatMessage(role="assistant", content=text)
 
 
 __all__ = [

@@ -22,6 +22,7 @@ from typing import List, Optional
 
 from rich import box
 from rich.console import Console, Group
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
@@ -72,7 +73,7 @@ class Monitor:
                 f"| Input tokens: {self.total_input_token_count:,} | Output tokens: {self.total_output_token_count:,}"
             )
         console_outputs += "]"
-        self.logger.log(Text(console_outputs, style="dim"), level=1)
+        self.logger.log(Padding(Text(console_outputs, style="dim"), (0,3)), level=2)
 
 
 class LogLevel(IntEnum):
@@ -82,7 +83,7 @@ class LogLevel(IntEnum):
     DEBUG = 2  # Detailed output
 
 
-YELLOW_HEX = "#d4b702"
+YELLOW_HEX = "#666888"
 
 
 class AgentLogger:
@@ -141,22 +142,29 @@ class AgentLogger:
 
     def log_rule(self, title: str, level: int = LogLevel.INFO) -> None:
         self.log(
-            Rule(
-                "[bold]" + title,
-                characters="━",
-                style=YELLOW_HEX,
+            Padding(
+                Rule(
+                    title,
+                    characters="~",
+                    style=YELLOW_HEX,
+                ),
+                (0,33,0,33)
             ),
             level=LogLevel.INFO,
         )
 
     def log_task(self, content: str, subtitle: str, title: Optional[str] = None, level: int = LogLevel.INFO) -> None:
         self.log(
-            Panel(
-                f"\n[bold]{escape_code_brackets(content)}\n",
-                title=title or "",
-                subtitle=subtitle,
-                border_style=YELLOW_HEX,
-                subtitle_align="left",
+            Padding(
+                Panel(
+                    f"\n{escape_code_brackets(content)}\n",
+                    title=title or "brain",
+                    title_align="left",
+                    subtitle=subtitle,
+                    border_style=YELLOW_HEX,
+                    subtitle_align="left",
+                ),
+                (bool(not title),0,0,0)
             ),
             level=level,
         )

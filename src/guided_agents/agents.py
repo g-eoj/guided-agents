@@ -278,9 +278,6 @@ You have been provided with these additional arguments, that you can access usin
         return ActionStep(step_number=self.step_number, start_time=step_start_time, observations_images=images, is_final=is_final)
 
     def _execute_step(self, task: str, memory_step: ActionStep) -> Union[None, Any]:
-        prefix = "brain "
-        if self.name:
-            prefix = self.name + " "
         final_answer = self.step(memory_step)
         if final_answer is not None and self.final_answer_checks:
             self._validate_final_answer(final_answer)
@@ -500,6 +497,8 @@ class ToolCallingAgent(MultiStepAgent):
             guide=guide,
             tools_to_call_from=list(self.tools.values()),
         )
+        if model_message.finish_reason == "length":
+            raise Exception("Max tokens exceeded.")
         memory_step.model_output_message = model_message
         model_output = model_message.content
         memory_step.model_output = model_output
@@ -669,6 +668,8 @@ class CodeAgent(MultiStepAgent):
                 stop_sequences=["<end_code>", "Observation:"],
                 **additional_args,
             )
+            if chat_message.finish_reason == "length":
+                raise Exception("Max tokens exceeded.")
             memory_step.model_output_message = chat_message
             model_output = chat_message.content
             memory_step.model_output = model_output

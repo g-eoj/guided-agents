@@ -139,6 +139,7 @@ class MultiStepAgent:
         description: Optional[str] = None,
         provide_run_summary: bool = False,
         final_answer_checks: Optional[List[Callable]] = None,
+        log_dir: Optional[str] = None,
     ):
         self.model = model
         self.prompt_templates = prompt_templates or EMPTY_PROMPT_TEMPLATES
@@ -161,7 +162,7 @@ class MultiStepAgent:
         self.input_messages = None
         self.task = None
         self.memory = AgentMemory(self.system_prompt)
-        self.logger = AgentLogger(level=verbosity_level)
+        self.logger = AgentLogger(level=verbosity_level, file_name=f"{log_dir}/{self.name}-log.txt")
         self.monitor = Monitor(self.model, self.logger)
         self.step_callbacks = step_callbacks if step_callbacks is not None else []
         self.step_callbacks.append(self.monitor.update_metrics)
@@ -272,6 +273,11 @@ You have been provided with these additional arguments, that you can access usin
                 yield memory_step
                 self.step_number += 1
 
+        self.logger.log_answer(
+            str(final_answer),
+            subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+            title=self.name if hasattr(self, "name") else None,
+        )
         yield handle_agent_output_types(final_answer)
 
     def _create_memory_step(self, step_start_time: float, images: List[str] | None, is_final: bool | None = None) -> ActionStep:
@@ -487,28 +493,45 @@ class ToolCallingAgent(MultiStepAgent):
         # Add new step in logs
         memory_step.model_input_messages = memory_messages.copy()
 
-        #try:
+        additional_args = {}
+        if self.guide:
+            additional_args["guide"] = self.guide
         if memory_step.is_final and self.final_guide:
-            guide = self.final_guide
-        else:
-            guide = self.guide
+            additional_args["guide"] = self.final_guide
         model_message: ChatMessage = self.model(
             memory_messages,
-            guide=guide,
             tools_to_call_from=list(self.tools.values()),
+            **additional_args
         )
         if model_message.finish_reason == "length":
             raise Exception("Max tokens exceeded.")
         memory_step.model_output_message = model_message
         model_output = model_message.content
+        self.logger.log_thought(
+            model_output,
+            subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+            title=self.name if hasattr(self, "name") else None,
+        )
         memory_step.model_output = model_output
-        print(model_output)
+        if not model_message.tool_calls:
+            memory_step.observations = model_message
+            self.logger.log_observation(
+                memory_step.observations,
+                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+                title=self.name if hasattr(self, "name") else None,
+            )
+            return None
         tool_call = model_message.tool_calls[0]
         tool_name, tool_call_id = tool_call.function.name, tool_call.id
         tool_arguments = tool_call.function.arguments
         all_previous_tool_arguments = self.tool_call_history.get(tool_name, [])
         if tool_arguments in all_previous_tool_arguments:
             memory_step.observations = f"Try something different. You already tried '{tool_name}' with arguments: {tool_arguments}"
+            self.logger.log_observation(
+                memory_step.observations,
+                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+                title=self.name if hasattr(self, "name") else None,
+            )
             return None
         all_previous_tool_arguments.append(tool_arguments)
         self.tool_call_history[tool_name] = all_previous_tool_arguments
@@ -534,20 +557,8 @@ class ToolCallingAgent(MultiStepAgent):
                 isinstance(answer, str) and answer in self.state.keys()
             ):  # if the answer is a state variable, return the value
                 final_answer = self.state[answer]
-                self.logger.log(
-                    f"[bold {YELLOW_HEX}]Final answer:[/bold {YELLOW_HEX}] Extracting key '{answer}' from state to return value '{final_answer}'.",
-                    level=LogLevel.INFO,
-                )
             else:
                 final_answer = answer
-                self.logger.log(
-                    Padding(
-                        Text(f"{final_answer}", style=f"bold {YELLOW_HEX}"),
-                        (0,0,2,2)
-                    ),
-                    level=LogLevel.INFO,
-                )
-
             memory_step.action_output = final_answer
             return final_answer
         else:
@@ -567,11 +578,12 @@ class ToolCallingAgent(MultiStepAgent):
             else:
                 updated_information = (
                     f"You asked the {tool_name}: \"{tool_arguments}\"\n\n"
-                    f"The answer from the thrall is: \"{str(observation).strip()}\""
+                    f"The answer from the {tool_name} is: \"{str(observation).strip()}\""
                 )
-            self.logger.log(
-                Padding(observation, (1,0,0,2)),
-                level=LogLevel.INFO,
+            self.logger.log_observation(
+                updated_information,
+                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+                title=self.name if hasattr(self, "name") else None,
             )
             memory_step.observations = updated_information
             return None
@@ -648,47 +660,60 @@ class CodeAgent(MultiStepAgent):
         Perform one step in the ReAct framework: the agent thinks, acts, and observes the result.
         Returns None if the step is not final.
         """
+        # Observation
         memory_messages = self.write_memory_to_messages()
         if memory_step.is_final:
             memory_messages[0]["content"][0]["text"] += (
                 "\n\nStarting now, the only tool you can call is the 'final_answer' tool. "
                 "Your python code blob should contain: final_answer(..."
             )
-
         self.input_messages = memory_messages.copy()
 
-        # Add new step in logs
         memory_step.model_input_messages = memory_messages.copy()
-        try:
-            additional_args = {"guide": self.guide} if self.guide is not None else {}
-            if memory_step.is_final and self.final_guide:
-                additional_args["guide"] = self.final_guide
-            chat_message: ChatMessage = self.model(
-                self.input_messages,
-                stop_sequences=["<end_code>", "Observation:"],
-                **additional_args,
-            )
-            if chat_message.finish_reason == "length":
-                raise Exception("Max tokens exceeded.")
-            memory_step.model_output_message = chat_message
-            model_output = chat_message.content
-            memory_step.model_output = model_output
-        except Exception as e:
-            raise AgentGenerationError(f"Error in generating model output:\n{e}", self.logger) from e
 
-        self.logger.log_markdown(
-            content=model_output,
-            title="Output message of the LLM:",
-            level=LogLevel.DEBUG,
+        # Thought
+        additional_args = {}
+        if self.guide:
+            additional_args["guide"] = self.guide
+        if memory_step.is_final and self.final_guide:
+            additional_args["guide"] = self.final_guide
+        chat_message: ChatMessage = self.model(
+            self.input_messages,
+            stop_sequences=["<end_code>", "Observation:"],
+            **additional_args,
+        )
+        if chat_message.finish_reason == "length":
+            raise Exception("Max tokens exceeded.")
+        model_output = chat_message.content
+
+        self.logger.log_thought(
+            model_output,
+            subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+            title=self.name if hasattr(self, "name") else None,
         )
 
-        # Parse
+        memory_step.model_output_message = chat_message
+
+        # Action
+        code_action = fix_final_answer_code(parse_code_blobs(model_output))
+        code_action = code_action.replace("final_answer(answer=", "final_answer(")
+        is_final_answer = False
         try:
-            code_action = fix_final_answer_code(parse_code_blobs(model_output))
-            code_action = code_action.replace("final_answer(answer=", "final_answer(")
+            output, execution_logs, is_final_answer = self.python_executor(
+                code_action,
+            )
+            observation = "Your Python console:\n\n" + execution_logs
+            sanitized_output = str(output).replace("`", "'")
+            observation += "\n\nYour Python code output:\n\n" + sanitized_output + "\n\n"
         except Exception as e:
-            error_msg = f"Error in code parsing:\n{e}\nMake sure to provide correct code blobs."
-            raise AgentParsingError(error_msg, self.logger)
+            output = None
+            observation = "Your Python console:\n\n" + str(e)
+
+        self.logger.log_observation(
+            observation,
+            subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+            title=self.name if hasattr(self, "name") else None,
+        )
 
         memory_step.tool_calls = [
             ToolCall(
@@ -697,43 +722,7 @@ class CodeAgent(MultiStepAgent):
                 id=f"call_{len(self.memory.steps)}",
             )
         ]
-
-        # Execute
-        #self.logger.log_code(title="Executing parsed code:", content=code_action, level=LogLevel.INFO)
-        is_final_answer = False
-        try:
-            output, execution_logs, is_final_answer = self.python_executor(
-                code_action,
-            )
-            execution_outputs_console = []
-            if len(execution_logs) > 0:
-                execution_outputs_console += [
-                    Text("Execution logs:", style="bold"),
-                    Text(execution_logs),
-                ]
-            observation = "Your Python console:\n\n" + execution_logs
-        except Exception as e:
-            if hasattr(self.python_executor, "state") and "_print_outputs" in self.python_executor.state:
-                execution_logs = str(self.python_executor.state["_print_outputs"])
-                if len(execution_logs) > 0:
-                    execution_outputs_console = [
-                        Text("Execution logs:", style="bold"),
-                        Text(execution_logs),
-                    ]
-                    memory_step.observations = execution_logs
-                    self.logger.log(Group(*execution_outputs_console), level=LogLevel.INFO)
-            error_msg = str(e)
-            if "Import of " in error_msg and " is not allowed" in error_msg:
-                self.logger.log(
-                    "[bold red]Warning to user: Code execution failed due to an unauthorized import - Consider passing said import under `additional_authorized_imports` when initializing your CodeAgent.",
-                    level=LogLevel.INFO,
-                )
-            raise AgentExecutionError(error_msg, self.logger)
-
-        sanitized_output = str(output).replace("`", "'")
-        observation += "\n\nYour Python code output:\n\n" + sanitized_output + "\n\n"
         memory_step.observations = observation
-
-        self.logger.log(Group(*execution_outputs_console), level=LogLevel.INFO)
         memory_step.action_output = output
+
         return output if is_final_answer else None

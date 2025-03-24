@@ -18,6 +18,7 @@
 # Copyright 2025 g-eoj
 import json
 from enum import IntEnum
+from re import sub
 from typing import List, Optional
 
 from rich import box
@@ -85,11 +86,22 @@ class LogLevel(IntEnum):
 
 YELLOW_HEX = "#666888"
 
+import logging
 
 class AgentLogger:
-    def __init__(self, level: LogLevel = LogLevel.INFO):
+    def __init__(self, level: LogLevel = LogLevel.INFO, file_name = None):
         self.level = level
         self.console = Console()
+        self.logger = logging.getLogger(file_name)
+        if file_name and not self.logger.handlers:
+            self.logger.setLevel(logging.INFO)
+            f = logging.Formatter(
+                fmt="[ %(agent)s | %(stage)s | %(model)s | %(asctime)s ]\n%(message)s\n\n",
+                datefmt='%Y-%m-%d %I:%M:%S%p'
+            )
+            h = logging.FileHandler(file_name)
+            h.setFormatter(f)
+            self.logger.addHandler(h)
 
     def log(self, *args, level: str | LogLevel = LogLevel.INFO, **kwargs) -> None:
         """Logs a message to the console.
@@ -103,6 +115,7 @@ class AgentLogger:
             self.console.print(*args, **kwargs)
 
     def log_markdown(self, content: str, title: Optional[str] = None, level=LogLevel.INFO, style=YELLOW_HEX) -> None:
+        self.logger.log(level=level, msg=content, extra={"stage": "markdown"})
         markdown_content = Syntax(
             content,
             lexer="markdown",
@@ -125,6 +138,7 @@ class AgentLogger:
             self.log(markdown_content, level=level)
 
     def log_code(self, title: str, content: str, level: int = LogLevel.INFO) -> None:
+        self.logger.log(level=level, msg=content)
         self.log(
             Panel(
                 Syntax(
@@ -153,18 +167,55 @@ class AgentLogger:
             level=LogLevel.INFO,
         )
 
-    def log_task(self, content: str, subtitle: str, title: Optional[str] = None, level: int = LogLevel.INFO) -> None:
+    def log_task(self, content: str, subtitle: str, title: str, level: int = LogLevel.INFO) -> None:
+        self.logger.info(msg=content, extra={"agent": title, "model": subtitle, "stage": "TASK"})
         self.log(
             Padding(
                 Panel(
                     f"\n{escape_code_brackets(content)}\n",
-                    title=title or "brain",
+                    title=title,
                     title_align="left",
                     subtitle=subtitle,
                     border_style=YELLOW_HEX,
                     subtitle_align="left",
                 ),
-                (bool(not title),0,0,0)
+                (1,0,0,0)
+            ),
+            level=level,
+        )
+
+    def log_thought(self, content: str, subtitle: str, title: str, level: int = LogLevel.INFO) -> None:
+        self.logger.info(msg=content, extra={"agent": title, "model": subtitle, "stage": "THOUGHT"})
+        self.log(
+            Padding(
+                Text(
+                    f"\n{escape_code_brackets(content)}\n",
+                ),
+                (0,0,0,0)
+            ),
+            level=level,
+        )
+
+    def log_observation(self, content: str, subtitle: str, title: str, level: int = LogLevel.INFO) -> None:
+        self.logger.info(msg=content, extra={"agent": title, "model": subtitle, "stage": "OBSERVATION"})
+        self.log(
+            Padding(
+                Text(
+                    f"\n{escape_code_brackets(content)}\n",
+                ),
+                (0,0,0,0)
+            ),
+            level=level,
+        )
+
+    def log_answer(self, content: str, subtitle: str, title: str, level: int = LogLevel.INFO) -> None:
+        self.logger.info(msg=content, extra={"agent": title, "model": subtitle, "stage": "ANSWER"})
+        self.log(
+            Padding(
+                Text(
+                    f"\n{escape_code_brackets(content)}\n",
+                ),
+                (0,0,0,0)
             ),
             level=level,
         )

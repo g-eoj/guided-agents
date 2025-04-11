@@ -26,6 +26,7 @@ import os
 import re
 import textwrap
 import types
+import urllib
 from functools import lru_cache
 from io import BytesIO
 from typing import TYPE_CHECKING, Any, Dict, Tuple, Union
@@ -287,6 +288,11 @@ def is_same_item(item1, item2):
         return item1 == item2
 
 
+def is_url(path: str) -> bool:
+    scheme = urllib.parse.urlparse(path).scheme
+    return scheme in ["file", "http", "https"]
+
+
 def instance_to_source(instance, base_cls=None):
     """Convert an instance to its class source code representation."""
     cls = instance.__class__
@@ -425,6 +431,9 @@ def get_source(obj) -> str:
 
 
 def encode_image_base64(image):
+    if isinstance(image, str):
+        from PIL import Image
+        image = Image.open(image)
     buffered = BytesIO()
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")

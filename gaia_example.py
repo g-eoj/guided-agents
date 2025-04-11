@@ -1,17 +1,20 @@
 import concurrent.futures
-import datasets
-import outlines
 import os
-import pandas
 import threading
-
 from datetime import datetime
+
+import datasets
+import mlx.core as mx
+import pandas
+import transformers
+import xgrammar
 from rich import print
-from gaia_scorer import question_scorer
 from tqdm.auto import tqdm
 
-from guided_agents import BaseMLXLogitsProcessor, CodeAgent, MLXModel, OpenAIServerModel, ToolCallingAgent
+from gaia_scorer import question_scorer
+from guided_agents import BaseMLXLogitsProcessor, CodeAgent, MLXLModel, ToolCallingAgent
 from guided_agents.default_tools import *
+from xgrammar.kernels.apply_token_bitmask_mlx import apply_token_bitmask_mlx
 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -21,7 +24,7 @@ class LockedMLXModel:
 
     def __init__(self, model_id, max_tokens):
         self.lock = threading.Lock()
-        self.model = MLXModel(
+        self.model = MLXLModel(
             model_id=model_id,
             max_tokens=max_tokens,
             logits_processor=RegexLogitsProcessor
@@ -34,18 +37,46 @@ class LockedMLXModel:
 
 
 class RegexLogitsProcessor(BaseMLXLogitsProcessor):
-    def __init__(self, guide, tokenizer):
-        self._outlines_processor = outlines.processors.RegexLogitsProcessor(
-            regex_string=guide,
-            tokenizer=outlines.models.TransformerTokenizer(tokenizer)
-        )
+    def __init__(self, guide, model_id):
+        tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
+        config = transformers.AutoConfig.from_pretrained(model_id)
+        # This can be larger than tokenizer.vocab_size due to paddings
+        try:
+            full_vocab_size = config.vocab_size
+        except:
+            full_vocab_size = None
+        tokenizer_info = xgrammar.TokenizerInfo.from_huggingface(tokenizer, vocab_size=full_vocab_size)
+        grammar_compiler = xgrammar.GrammarCompiler(tokenizer_info)
+        compiled_grammar = grammar_compiler.compile_regex(regex=guide)
+        self._processor = XGrammarLogitsProcessor(compiled_grammar)
 
     def __call__(self, input_ids, logits):
-        processed_logits = self._outlines_processor(
+        processed_logits = self._processor(
             input_ids,
-            logits.reshape(-1)
+            logits
         )
-        return processed_logits.reshape(1, -1)
+        return processed_logits
+
+
+class XGrammarLogitsProcessor:
+    def __init__(self, grammar: xgrammar.CompiledGrammar, max_rollback_tokens: int = 16):
+        self.matcher = xgrammar.GrammarMatcher(grammar, max_rollback_tokens=max_rollback_tokens)
+        self.vocab_size = grammar.tokenizer_info.vocab_size
+        self.bitmask = xgrammar.allocate_token_bitmask(1, self.vocab_size)
+        self._prefilled = False
+
+    def __call__(self, tokens: mx.array, logits: mx.array) -> mx.array:
+        last_token = tokens[-1].item()
+        if self._prefilled and not self.matcher.is_terminated():
+            assert self.matcher.accept_token(last_token)
+        else:
+            self._prefilled = True
+        if not self.matcher.is_terminated():
+            self.matcher.fill_next_token_bitmask(self.bitmask)
+            return apply_token_bitmask_mlx(
+                mx.array(self.bitmask.numpy()), logits, self.vocab_size
+            )
+        return logits
 
 
 def run_agents(question, additional_args, log_dir):

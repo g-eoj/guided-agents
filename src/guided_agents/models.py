@@ -19,19 +19,24 @@
 import abc
 import json
 import logging
+import time
 import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+
+import mlx.core as mx
+import mlx.nn as nn
 
 from .tools import Tool
-from .utils import _is_package_available, encode_image_base64, make_image_url
+from .utils import _is_package_available, encode_image_base64, is_url, make_image_url
 
 
 if TYPE_CHECKING:
-    import mlx.core as mx
     import mlx_lm
+    import mlx_vlm
+
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,19 @@ class ChatMessage:
 
     def dict(self):
         return json.dumps(get_dict_from_nested_dataclasses(self))
+
+
+@dataclass
+class MLXVLMGenerationResult:
+    text: str
+    token: Optional[int]
+    logprobs: Optional[List[float]]
+    prompt_tokens: int
+    generation_tokens: int
+    prompt_tps: float
+    generation_tps: float
+    peak_memory: float
+    finish_reason: Optional[str] = None
 
 
 def parse_json_if_needed(arguments: Union[str, dict]) -> Union[str, dict]:
@@ -192,17 +210,16 @@ def get_clean_message_list(
     output_message_list = []
     message_list = deepcopy(message_list)  # Avoid modifying the original list
     for message in message_list:
+
         role = message["role"]
         if role not in MessageRole.roles():
             raise ValueError(f"Incorrect role {role}, only {MessageRole.roles()} are supported for now.")
-
         if role in role_conversions:
             message["role"] = role_conversions[role]
-        # encode images if needed
+
         if isinstance(message["content"], list):
             for element in message["content"]:
-                if element["type"] == "image":
-                    assert not flatten_messages_as_text, f"Cannot use images with {flatten_messages_as_text=}"
+                if element["type"] == "image" and not is_url(element["image"]):
                     if convert_images_to_image_urls:
                         element.update(
                             {
@@ -225,6 +242,7 @@ def get_clean_message_list(
             else:
                 content = message["content"]
             output_message_list.append({"role": message["role"], "content": content})
+
     return output_message_list
 
 
@@ -371,40 +389,7 @@ class Model:
 class BaseMLXLogitsProcessor(abc.ABC):
     """Enables the model to produce structured output through guide or regex.
 
-    This base class is meant to provide a structure for using logits processor libraries with MLXModels.
-
-    Example:
-    ```python
-    import outlines
-    from guided_agents import CodeAgent, BaseMLXLogitsProcessor, MLXModel
-
-
-    class RegexLogitsProcessor(BaseMLXLogitsProcessor):
-        def __init__(self, guide, tokenizer):
-            self._outlines_processor = outlines.processors.RegexLogitsProcessor(
-                regex_string=guide,
-                tokenizer=outlines.models.TransformerTokenizer(tokenizer)
-            )
-
-        def __call__(self, input_ids, logits):
-            processed_logits = self._outlines_processor(
-                input_ids,
-                logits.reshape(-1)
-            )
-            return processed_logits.reshape(1, -1)
-
-    model = MLXModel(
-        model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
-        max_tokens=5000,
-        logits_processor=RegexLogitsProcessor
-    )
-
-    CodeAgent(
-        model=model,
-        guide=r'Thought: ([^\\.\n]+?\\.){1,3}\nCode:\n```(?:py|python)?\n[^`]+?```<end_code>',
-        tools=[],
-    )
-    ```
+    This base class is meant to provide a structure for using logits processor libraries with MLX models.
     """
 
     @abc.abstractmethod
@@ -416,8 +401,8 @@ class BaseMLXLogitsProcessor(abc.ABC):
         pass
 
 
-class MLXModel(Model):
-    """A class to interact with models loaded using MLX on Apple silicon.
+class MLXLModel(Model):
+    """A class to interact with language models loaded using MLX on Apple silicon.
 
     > [!TIP]
     > You must have `mlx-lm` installed on your machine. Please run `pip install guided_agents[mlx-lm]` if it's not the case.
@@ -485,10 +470,11 @@ class MLXModel(Model):
             # solution for extracting tool JSON without assuming a specific model output format
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
+                content = ""
                 parsed_text = json.loads(maybe_json)
             except json.JSONDecodeError as e:
-                text += f"\n\nTool JSON decode failure: {e}\n\n"
-                text += maybe_json
+                content = f"\n\nTool JSON decode failure: {e}\n\n"
+                content += maybe_json
                 parsed_text = {}
             finally:
                 tool_name = parsed_text.get(self.tool_name_key, None)
@@ -496,10 +482,10 @@ class MLXModel(Model):
                 if tool_name:
                     return ChatMessage(
                         role="assistant",
-                        content="",
+                        content=content,
                         tool_calls=[
                             ChatMessageToolCall(
-                                id=uuid.uuid4(),
+                                id=str(uuid.uuid4()),
                                 type="function",
                                 function=ChatMessageToolCallDefinition(name=tool_name, arguments=tool_arguments),
                             )
@@ -532,34 +518,419 @@ class MLXModel(Model):
         if guide:
             if self.logits_processor is None:
                 raise ValueError("Please initialize the model with a logits processor to use a guide.")
-            completion_kwargs["logits_processors"] = [self.logits_processor(guide=guide, tokenizer=self.tokenizer)]
+            completion_kwargs["logits_processors"] = [self.logits_processor(guide=guide, model_id=self.model_id)]
 
         prompt_ids = self.tokenizer.apply_chat_template(
             messages,
-            #tools=tools,
             add_generation_prompt=True,
         )
-
-        #print()
-        #print(self.tokenizer.decode(prompt_ids))
 
         self.last_input_token_count = len(prompt_ids)
         self.last_output_token_count = 0
         text = ""
 
-        print()
         for _ in self.stream_generate(self.model, self.tokenizer, prompt=prompt_ids, **completion_kwargs):
-            print(_.text, end="", flush=True)
             self.last_output_token_count += 1
             text += _.text
             for stop_sequence in prepared_stop_sequences + [self.tokenizer.eos_token]:
                 stop_sequence_start = text.rfind(stop_sequence)
                 if stop_sequence_start != -1:
                     text = text[:stop_sequence_start]
-                    print()
                     return self._to_message(text, tools_to_call_from, finish_reason="stop_sequence")
 
         return self._to_message(text, tools_to_call_from, finish_reason=_.finish_reason)
+
+
+class MLXVLModel(Model):
+    """A class to interact with vision language models loaded using MLX on Apple silicon.
+
+    > [!TIP]
+    > You must have `mlx-vlm` installed on your machine. Please run `pip install guided_agents[mlx-vlm]` if it's not the case.
+
+    Parameters:
+        model_id (str):
+            The Hugging Face model ID to be used for inference. This can be a path or model identifier from the Hugging Face model hub.
+        tool_name_key (str):
+            The key, which can usually be found in the model's chat template, for retrieving a tool name.
+        tool_arguments_key (str):
+            The key, which can usually be found in the model's chat template, for retrieving tool arguments.
+        trust_remote_code (bool):
+            Some models on the Hub require running remote code: for this model, you would have to set this flag to True.
+        logits_processor (BaseMLXLogitsProcessor *optional*):
+            Structures model output based on a guide argument to the model's call method.
+        kwargs (dict, *optional*):
+            Any additional keyword arguments that you want to use in model.generate(), for instance `max_tokens`.
+
+    Example:
+    ```python
+    >>> engine = MLXModel(
+    ...     model_id="mlx-community/Qwen2.5-VL-32B-Instruct-4bit",
+    ...     max_tokens=10000,
+    ... )
+    >>> messages = [
+    ...     {
+    ...         "role": "user",
+    ...         "content": [
+    ...             {"type": "text", "text": "Explain quantum mechanics in simple terms."}
+    ...         ]
+    ...     }
+    ... ]
+    >>> response = engine(messages, stop_sequences=["END"])
+    >>> print(response)
+    "Quantum mechanics is the branch of physics that studies..."
+    ```
+    """
+
+    def __init__(
+        self,
+        model_id: str,
+        tool_name_key: str = "name",
+        tool_arguments_key: str = "arguments",
+        trust_remote_code: bool = False,
+        logits_processor: Optional[BaseMLXLogitsProcessor] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        if not _is_package_available("mlx_vlm"):
+            raise ModuleNotFoundError(
+                "Please install 'mlx-vlm' extra to use 'MLXVLModel': `pip install 'guided_agents[mlx-vlm]'`"
+            )
+        import mlx_vlm
+
+        self.model_id = model_id
+        self.model, self.processor = mlx_vlm.load(model_id, processor_kwargs={"trust_remote_code": trust_remote_code})
+        self.tool_name_key = tool_name_key
+        self.tool_arguments_key = tool_arguments_key
+        self.logits_processor = logits_processor
+
+    def _to_message(self, text, tools_to_call_from, finish_reason=None):
+        tool_call_start = "Action:\n{"
+        if tools_to_call_from and tool_call_start in text:
+            # solution for extracting tool JSON without assuming a specific model output format
+            maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
+            try:
+                content = ""
+                parsed_text = json.loads(maybe_json)
+            except json.JSONDecodeError as e:
+                content = f"\n\nTool JSON decode failure: {e}\n\n"
+                content += maybe_json
+                parsed_text = {}
+            finally:
+                tool_name = parsed_text.get(self.tool_name_key, None)
+                tool_arguments = parsed_text.get(self.tool_arguments_key, None)
+                if tool_name:
+                    return ChatMessage(
+                        role="assistant",
+                        content=content,
+                        tool_calls=[
+                            ChatMessageToolCall(
+                                id=str(uuid.uuid4()),
+                                type="function",
+                                function=ChatMessageToolCallDefinition(name=tool_name, arguments=tool_arguments),
+                            )
+                        ],
+                    )
+        return ChatMessage(role="assistant", content=text, finish_reason=finish_reason)
+
+    def __call__(
+        self,
+        messages: List[Dict[str, str]],
+        stop_sequences: Optional[List[str]] = None,
+        guide: Optional[str] = None,
+        tools_to_call_from: Optional[List[Tool]] = None,
+        **kwargs,
+    ) -> ChatMessage:
+        completion_kwargs = self._prepare_completion_kwargs(
+            messages=messages,
+            stop_sequences=stop_sequences,
+            guide=guide,
+            tools_to_call_from=tools_to_call_from,
+            **kwargs,
+        )
+        # completion_kwargs post-process steps needed for mlx-vlm
+        messages = completion_kwargs.pop("messages")
+        prepared_stop_sequences = completion_kwargs.pop("stop", [])
+        completion_kwargs.pop("tools", None)
+        completion_kwargs.pop("tool_choice", None)
+        guide = completion_kwargs.pop("guide", None)
+        if guide:
+            if self.logits_processor is None:
+                raise ValueError("Please initialize the model with a logits processor to use a guide.")
+            completion_kwargs["logits_processors"] = [self.logits_processor(guide=guide, model_id=self.model_id)]
+
+        prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        images = []
+        for message in messages:
+            for content in message["content"]:
+                if content["type"] == "image":
+                    image = content["image"]
+                    if isinstance(image, str) and image.startswith("file://"):
+                        image = image[len("file://"):]
+                    images.append(image)
+
+        text = ""
+        for _ in self.stream_generate(
+            self.model,
+            self.processor,
+            prompt,
+            images,
+            **completion_kwargs
+        ):
+            text += _.text
+            for stop_sequence in prepared_stop_sequences:
+                stop_sequence_start = text.rfind(stop_sequence)
+                if stop_sequence_start != -1:
+                    text = text[:stop_sequence_start]
+                    return self._to_message(text, tools_to_call_from, finish_reason="stop_sequence")
+
+        return self._to_message(text, tools_to_call_from, finish_reason=None)
+
+    def generate_step(
+        self,
+        input_ids: mx.array,
+        model: nn.Module,
+        pixel_values,
+        mask,
+        *,
+        max_tokens: int = 256,
+        temperature: float = 0.0,
+        repetition_penalty: Optional[float] = None,
+        repetition_context_size: Optional[int] = 20,
+        top_p: float = 1.0,
+        logit_bias: Optional[Dict[int, float]] = None,
+        logits_processors: Optional[List[Callable[[mx.array, mx.array], mx.array]]] = None,
+        **kwargs,
+    ) -> "mlx_vlm.utils.Generator[Tuple[mx.array, mx.array], None, None]":
+        """
+        A generator producing token ids based on the given prompt from the model.
+
+        Args:
+            ...
+            logits_processors (List[Callable[[mx.array, mx.array], mx.array]], optional):
+            A list of functions that take tokens and logits and return the processed
+            logits. Default: ``None``.
+
+        Yields:
+            Generator[Tuple[mx.array, mx.array], None, None]: A generator producing
+            one token and a vector of log probabilities.
+        """
+        from mlx_vlm.utils import KVCache
+
+        def sample(logits: mx.array) -> Tuple[mx.array, float]:
+            if logit_bias:
+                indices = mx.array(list(logit_bias.keys()))
+                values = mx.array(list(logit_bias.values()))
+                logits[:, indices] += values
+            logprobs = logits - mx.logsumexp(logits)
+
+            if temperature == 0:
+                token = mx.argmax(logits, axis=-1)
+            else:
+                if top_p > 0 and top_p < 1.0:
+                    token = top_p_sampling(logits, top_p, temperature)
+                else:
+                    token = mx.random.categorical(logits * (1 / temperature))
+
+            return token, logprobs
+
+        if repetition_penalty and (
+            repetition_penalty < 0 or not isinstance(repetition_penalty, float)
+        ):
+            raise ValueError(
+                f"repetition_penalty must be a non-negative float, got {repetition_penalty}"
+            )
+
+        y = input_ids
+        if hasattr(model.language_model, "make_cache"):
+            cache = model.language_model.make_cache()
+        else:
+            kv_heads = (
+                [model.language_model.n_kv_heads] * len(model.language_model.layers)
+                if isinstance(model.language_model.n_kv_heads, int)
+                else model.language_model.n_kv_heads
+            )
+            if model.config.model_type == "florence2":
+                cache = [
+                    (SimpleKVCache(), SimpleKVCache()) for n in model.language_model.layers
+                ]
+            else:
+                cache = [KVCache(model.language_model.head_dim, n) for n in kv_heads]
+
+        repetition_context = input_ids.reshape(-1).tolist()
+
+        if repetition_context_size:
+            repetition_context = repetition_context[-repetition_context_size:]
+
+        tokens = None
+        def _step(y, **kwargs):
+            nonlocal repetition_context
+            if "decoder_input_ids" in kwargs:
+                outputs = model.language_model(
+                    cache=cache,
+                    **kwargs,
+                )
+            else:
+                outputs = model.language_model(
+                    y[None],
+                    cache=cache,
+                    **kwargs,
+                )
+
+            logits = outputs.logits[:, -1, :]
+
+            if logits_processors:
+                nonlocal tokens
+                tokens = mx.concat([tokens, y]) if tokens is not None else y
+                for processor in logits_processors:
+                    logits = processor(tokens, logits)
+
+            if repetition_penalty:
+                logits = apply_repetition_penalty(
+                    logits, repetition_context, repetition_penalty
+                )
+                y, logprobs = sample(logits)
+                repetition_context.append(y.item())
+            else:
+                y, logprobs = sample(logits)
+
+            if repetition_context_size:
+                if len(repetition_context) > repetition_context_size:
+                    repetition_context = repetition_context[-repetition_context_size:]
+            return y, logprobs.squeeze(0)
+
+        outputs = model(input_ids, pixel_values, cache=cache, mask=mask, **kwargs)
+
+        logits = outputs.logits[:, -1, :]
+        y, logprobs = sample(logits)
+        mx.async_eval(y, logprobs)
+
+        if outputs.cross_attention_states is not None:
+            kwargs = {
+                k: v
+                for k, v in zip(
+                    ["cross_attention_states"], [outputs.cross_attention_states]
+                )
+            }
+        elif outputs.encoder_outputs is not None:
+            kwargs = {
+                "decoder_input_ids": y[None],
+                "encoder_outputs": outputs.encoder_outputs,
+            }
+        else:
+            kwargs = {}
+
+        n = 0
+        while True:
+            if n != max_tokens:
+                next_y, next_logprobs = _step(y, **kwargs)
+                mx.async_eval(next_y, next_logprobs)
+                y, logprobs = next_y, next_logprobs
+            if n == 0:
+                mx.eval(y)
+            if n == max_tokens:
+                break
+            if "decoder_input_ids" in kwargs:
+                kwargs["decoder_input_ids"] = next_y[None]
+            yield y.item(), logprobs
+            y, logprobs = next_y, next_logprobs
+            n += 1
+
+
+    def stream_generate(
+        self,
+        model: nn.Module,
+        processor: "mlx_vlm.utils.PreTrainedTokenizer",
+        prompt: str,
+        image: Union[str, List[str]] = None,
+        **kwargs,
+    ) -> "Union[str, mlx.utils.Generator[str, None, None]]":
+        """
+        A generator producing text based on the given prompt from the model.
+
+        Args:
+            model (nn.Module): The model to use for generation.
+            processor: ...
+            prompt (mx.array): The input prompt.
+            image: ...
+            kwargs: The remaining options get passed to :func:`generate_step`.
+            See :func:`generate_step` for more details.
+
+        Yields:
+            Generator[Tuple[mx.array, mx.array]]: A generator producing text.
+        """
+        from mlx_vlm.utils import prepare_inputs
+
+        tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+        add_special_tokens = not hasattr(processor, "chat_template")
+        prompt_tokens = mx.array(
+            tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
+        )
+
+        resize_shape = kwargs.pop("resize_shape", None)
+        image_token_index = getattr(model.config, "image_token_index", None)
+
+        if kwargs.get("pixel_values") is None:
+            if not image:
+                input_ids = prompt_tokens[None, :]
+                pixel_values = mask = None
+            else:
+                inputs = prepare_inputs(
+                    processor, image, prompt, image_token_index, resize_shape
+                )
+                input_ids = inputs["input_ids"]
+                pixel_values = inputs["pixel_values"]
+                mask = inputs["attention_mask"]
+                data_kwargs = {
+                    k: v
+                    for k, v in inputs.items()
+                    if k not in ["input_ids", "pixel_values", "attention_mask"]
+                }
+                kwargs.update(data_kwargs)
+        else:
+            input_ids = kwargs.pop("input_ids")
+            pixel_values = kwargs.pop("pixel_values")
+            mask = kwargs.pop("mask")
+
+        detokenizer = processor.detokenizer
+        detokenizer.reset()
+        tic = time.perf_counter()
+        for n, (token, logprobs) in enumerate(
+            self.generate_step(input_ids, model, pixel_values, mask, **kwargs)
+        ):
+            if n == 0:
+                prompt_time = time.perf_counter() - tic
+                prompt_tps = input_ids.size / prompt_time
+                tic = time.perf_counter()
+
+            if token == tokenizer.eos_token_id:
+                break
+
+            detokenizer.add_token(token)
+
+            # Yield the last segment if streaming
+            yield MLXVLMGenerationResult(
+                text=detokenizer.last_segment,
+                token=token,
+                logprobs=logprobs,
+                prompt_tokens=input_ids.size,
+                generation_tokens=n + 1,
+                prompt_tps=prompt_tps,
+                generation_tps=(n + 1) / (time.perf_counter() - tic),
+                peak_memory=mx.get_peak_memory() / 1e9,
+            )
+
+        detokenizer.finalize()
+        yield MLXVLMGenerationResult(
+            text=detokenizer.last_segment,
+            token=token,
+            logprobs=logprobs,
+            prompt_tokens=input_ids.size,
+            generation_tokens=n + 1,
+            prompt_tps=prompt_tps,
+            generation_tps=(n + 1) / (time.perf_counter() - tic),
+            peak_memory=mx.get_peak_memory() / 1e9,
+            finish_reason="stop" if token == tokenizer.eos_token_id else "length",
+        )
 
 
 class OpenAIServerModel(Model):
@@ -662,10 +1033,11 @@ class OpenAIServerModel(Model):
             # solution for extracting tool JSON without assuming a specific model output format
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
+                content = ""
                 parsed_text = json.loads(maybe_json)
             except json.JSONDecodeError as e:
-                text += f"\n\nTool JSON decode failure: {e}\n\n"
-                text += maybe_json
+                content = f"\n\nTool JSON decode failure: {e}\n\n"
+                content += maybe_json
                 parsed_text = {}
             finally:
                 tool_name = parsed_text.get(self.tool_name_key, None)
@@ -673,7 +1045,7 @@ class OpenAIServerModel(Model):
                 if tool_name:
                     return ChatMessage(
                         role="assistant",
-                        content="",
+                        content=content,
                         tool_calls=[
                             ChatMessageToolCall(
                                 id=uuid.uuid4(),
@@ -690,7 +1062,8 @@ __all__ = [
     "tool_role_conversions",
     "get_clean_message_list",
     "Model",
-    "MLXModel",
+    "MLXLModel",
+    "MLXVLModel",
     "BaseMLXLogitsProcessor",
     "OpenAIServerModel",
     "ChatMessage",

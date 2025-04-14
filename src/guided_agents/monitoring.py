@@ -18,7 +18,6 @@
 # Copyright 2025 g-eoj
 import json
 from enum import IntEnum
-from re import sub
 from typing import List, Optional
 
 from rich import box
@@ -88,20 +87,17 @@ YELLOW_HEX = "#666888"
 
 import logging
 
+
 class AgentLogger:
-    def __init__(self, level: LogLevel = LogLevel.INFO, file_name = None):
+    def __init__(self, level: LogLevel = LogLevel.INFO, logger = None):
         self.level = level
         self.console = Console()
-        self.logger = logging.getLogger(file_name)
-        if file_name and not self.logger.handlers:
-            self.logger.setLevel(logging.INFO)
-            f = logging.Formatter(
-                fmt="[ %(agent)s | %(stage)s | %(model)s | %(asctime)s ]\n%(message)s\n\n",
-                datefmt='%Y-%m-%d %I:%M:%S%p'
-            )
-            h = logging.FileHandler(file_name)
-            h.setFormatter(f)
-            self.logger.addHandler(h)
+        if logger:
+            self.logger = logger
+        else:
+            self.logger = logging.getLogger(__name__)
+            self.logger.addHandler(logging.NullHandler())
+
 
     def log(self, *args, level: str | LogLevel = LogLevel.INFO, **kwargs) -> None:
         """Logs a message to the console.

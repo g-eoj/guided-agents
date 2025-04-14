@@ -132,7 +132,8 @@ class MultiStepAgent:
         description: Optional[str] = None,
         provide_run_summary: bool = False,
         final_answer_checks: Optional[List[Callable]] = None,
-        log_dir: Optional[str] = None,
+        logger: Optional = None,
+        inherit_knowledge: bool = False,
     ):
         self.model = model
         self.prompt_templates = prompt_templates or EMPTY_PROMPT_TEMPLATES
@@ -156,7 +157,7 @@ class MultiStepAgent:
         self.input_messages = None
         self.task = None
         self.memory = AgentMemory(self.system_prompt)
-        self.logger = AgentLogger(level=verbosity_level, file_name=f"{log_dir}/{self.name}-log.txt")
+        self.logger = AgentLogger(level=verbosity_level, logger=logger)
         self.monitor = Monitor(self.model, self.logger)
         self.step_callbacks = step_callbacks if step_callbacks is not None else []
         self.step_callbacks.append(self.monitor.update_metrics)

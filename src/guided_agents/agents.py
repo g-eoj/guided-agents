@@ -148,6 +148,7 @@ class MultiStepAgent:
         self.description = description
         self.provide_run_summary = provide_run_summary
         self.final_answer_checks = final_answer_checks
+        self.inherit_knowledge = inherit_knowledge
 
         self._setup_managed_agents(managed_agents)
         self._setup_tools(tools)
@@ -219,12 +220,11 @@ class MultiStepAgent:
         """
         max_steps = max_steps or self.max_steps
         self.task = task
-        if additional_args is not None:
+        if not isinstance(self.task, str):
+            raise RuntimeError(self.task)
+        if additional_args:
+            self.task += f"\n\nThe user has shared these variables for you to access in Python:\n\n{additional_args}"
             self.state.update(additional_args)
-            self.task += f"""
-You have been provided with these additional arguments, that you can access using the keys as variables in your python code:
-{str(additional_args)}."""
-
         self.system_prompt = self.initialize_system_prompt()
         self.memory.system_prompt = SystemPromptStep(system_prompt=self.system_prompt)
         if reset:

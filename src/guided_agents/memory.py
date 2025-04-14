@@ -96,7 +96,7 @@ class ActionStep(MemoryStep):
             "action_output": make_json_serializable(self.action_output),
         }
 
-    def to_messages(self, summary_mode: bool = False, show_model_input_messages: bool = False) -> List[Message]:
+    def to_messages(self, show_model_input_messages: bool = False) -> List[Message]:
         messages = []
         if self.model_input_messages is not None and show_model_input_messages:
             messages.append(Message(role=MessageRole.SYSTEM, content=self.model_input_messages))
@@ -126,14 +126,12 @@ class ActionStep(MemoryStep):
                         {
                             "type": "text",
                             "text": self.observations,
-                            # "text": f"Call id: {self.tool_calls[0].id}\nObservation:\n{self.observations}",
                         }
                     ],
                 )
             )
         if self.error is not None:
             error_message = str(self.error)
-            # message_content = f"Call id: {self.tool_calls[0].id}\n" if self.tool_calls else ""
             message_content = "\n\nFix this error:\n"
             message_content += error_message
             messages.append(
@@ -161,12 +159,11 @@ class TaskStep(MemoryStep):
     task: str
     task_images: List[str] | None = None
 
-    def to_messages(self, summary_mode: bool = False, **kwargs) -> List[Message]:
+    def to_messages(self, **kwargs) -> List[Message]:
         content = [{"type": "text", "text": self.task}]
         if self.task_images:
             for image in self.task_images:
                 content.append({"type": "image", "image": image})
-
         return [Message(role=MessageRole.USER, content=content)]
 
 
@@ -174,9 +171,7 @@ class TaskStep(MemoryStep):
 class SystemPromptStep(MemoryStep):
     system_prompt: str
 
-    def to_messages(self, summary_mode: bool = False, **kwargs) -> List[Message]:
-        if summary_mode:
-            return []
+    def to_messages(self, **kwargs) -> List[Message]:
         return [Message(role=MessageRole.SYSTEM, content=[{"type": "text", "text": self.system_prompt}])]
 
 

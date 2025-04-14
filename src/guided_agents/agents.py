@@ -25,10 +25,6 @@ from typing import Any, Callable, Dict, Generator, List, Optional, TypedDict, Un
 
 import yaml
 from jinja2 import StrictUndefined, Template
-from rich.console import Group
-from rich.padding import Padding
-from rich.panel import Panel
-from rich.text import Text
 
 from .agent_types import AgentAudio, AgentImage, AgentType, handle_agent_output_types
 from .default_tools import FinalAnswerTool
@@ -42,7 +38,6 @@ from .models import (
     ChatMessage,
 )
 from .monitoring import (
-    YELLOW_HEX,
     AgentLogger,
     LogLevel,
     Monitor,
@@ -50,9 +45,6 @@ from .monitoring import (
 from .tools import Tool
 from .utils import (
     AgentError,
-    AgentExecutionError,
-    AgentGenerationError,
-    AgentParsingError,
     parse_code_blobs,
     parse_json_tool_call,
 )
@@ -132,6 +124,7 @@ class MultiStepAgent:
         tool_parser: Optional[Callable] = None,
         verbosity_level: LogLevel = LogLevel.INFO,
         guide: Optional[str] = None,
+        initial_guide: Optional[str] = None,
         final_guide: Optional[str] = None,
         managed_agents: Optional[List] = None,
         step_callbacks: Optional[List[Callable]] = None,
@@ -147,6 +140,7 @@ class MultiStepAgent:
         self.step_number = 0
         self.tool_parser = tool_parser or parse_json_tool_call
         self.guide = guide
+        self.initial_guide = initial_guide
         self.final_guide = final_guide
         self.state = {}
         self.name = name
@@ -256,14 +250,19 @@ You have been provided with these additional arguments, that you can access usin
         return deque(self._run(task=self.task, max_steps=max_steps, images=images), maxlen=1)[0]
 
     def _run(
-        self, task: str, max_steps: int, images: List[str] | None = None
+        self, task: str, max_steps: int, images: List[str] | None = None,
     ) -> Generator[ActionStep | AgentType, None, None]:
         final_answer = None
         self.step_number = 1
         while final_answer is None and self.step_number <= max_steps:
             step_start_time = time.time()
             is_final = self.step_number == max_steps
-            memory_step = self._create_memory_step(step_start_time, images, is_final=is_final)
+            memory_step = ActionStep(
+                step_number=self.step_number,
+                start_time=step_start_time,
+                observations_images=images,
+                is_final=is_final
+            )
             try:
                 final_answer = self._execute_step(task, memory_step)
             except AgentError as e:
@@ -279,9 +278,6 @@ You have been provided with these additional arguments, that you can access usin
             title=self.name if hasattr(self, "name") else None,
         )
         yield handle_agent_output_types(final_answer)
-
-    def _create_memory_step(self, step_start_time: float, images: List[str] | None, is_final: bool | None = None) -> ActionStep:
-        return ActionStep(step_number=self.step_number, start_time=step_start_time, observations_images=images, is_final=is_final)
 
     def _execute_step(self, task: str, memory_step: ActionStep) -> Union[None, Any]:
         final_answer = self.step(memory_step)
@@ -310,18 +306,10 @@ You have been provided with these additional arguments, that you can access usin
         """To be implemented in child classes"""
         pass
 
-    def write_memory_to_messages(
-        self,
-        summary_mode: Optional[bool] = False,
-    ) -> List[Dict[str, str]]:
-        """
-        Reads past llm_outputs, actions, and observations or errors from the memory into a series of messages
-        that can be used as input to the LLM. Adds a number of keywords (such as PLAN, error, etc) to help
-        the LLM.
-        """
-        messages = self.memory.system_prompt.to_messages(summary_mode=summary_mode)
+    def memory_to_messages(self) -> List[Dict[str, str]]:
+        messages = self.memory.system_prompt.to_messages()
         for memory_step in self.memory.steps:
-            messages.extend(memory_step.to_messages(summary_mode=summary_mode))
+            messages.extend(memory_step.to_messages())
         return messages
 
     def visualize(self):
@@ -339,65 +327,56 @@ You have been provided with these additional arguments, that you can access usin
         """
         available_tools = {**self.tools, **self.managed_agents}
         if tool_name not in available_tools:
-            error_msg = f"Unknown tool {tool_name}, should be instead one of {list(available_tools.keys())}."
-            raise AgentExecutionError(error_msg, self.logger)
-
+            return f"Unknown tool {tool_name}, should be instead one of {list(available_tools.keys())}."
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except:
+                pass
         try:
             if isinstance(arguments, str):
                 if tool_name in self.managed_agents:
-                    observation = available_tools[tool_name].__call__(arguments)
+                    observation = available_tools[tool_name].__call__(arguments, additional_args=self.state, memory_steps=self.memory.steps)
                 else:
                     observation = available_tools[tool_name].__call__(arguments, sanitize_inputs_outputs=True)
+            elif isinstance(arguments, list):
+                if tool_name in self.managed_agents:
+                    observation = available_tools[tool_name].__call__(", ".join(arguments), additional_args=self.state, memory_steps=self.memory.steps)
+                else:
+                    observation = available_tools[tool_name].__call__(*arguments, sanitize_inputs_outputs=True)
             elif isinstance(arguments, dict):
                 for key, value in arguments.items():
                     if isinstance(value, str) and value in self.state:
                         arguments[key] = self.state[value]
                 if tool_name in self.managed_agents:
-                    observation = available_tools[tool_name].__call__(arguments)
+                    observation = available_tools[tool_name].__call__(arguments, additional_args=self.state, memory_steps=self.memory.steps)
                 else:
                     observation = available_tools[tool_name].__call__(**arguments, sanitize_inputs_outputs=True)
             else:
-                error_msg = f"Arguments passed to tool should be a dict or string: got a {type(arguments)}."
-                raise AgentExecutionError(error_msg, self.logger)
+                return f"Arguments passed to tool should be a dict or string: got a {type(arguments)}."
             return observation
         except Exception as e:
-            if tool_name in self.tools:
-                tool = self.tools[tool_name]
-                error_msg = (
-                    f"Error when executing tool {tool_name} with arguments {arguments}: {type(e).__name__}: {e}\nYou should only use this tool with a correct input.\n"
-                    f"As a reminder, this tool's description is the following: '{tool.description}'.\nIt takes inputs: {tool.inputs} and returns output type {tool.output_type}"
-                )
-                raise AgentExecutionError(error_msg, self.logger)
-            elif tool_name in self.managed_agents:
-                error_msg = (
-                    f"Error in calling team member: {e}\nYou should only ask this team member with a correct request.\n"
-                    f"As a reminder, this team member's description is the following:\n{available_tools[tool_name]}"
-                )
-                raise AgentExecutionError(error_msg, self.logger)
+            return f"Tool call failed with error:\n{e}"
 
     def step(self, memory_step: ActionStep) -> Union[None, Any]:
         """To be implemented in children classes. Should return either None if the step is not final."""
         pass
 
-    def __call__(self, *args):
+    def __call__(self, *args, additional_args=None, memory_steps=None):
         """Adds additional prompting for the managed agent, runs it, and wraps the output.
 
         This method is called only by a managed agent.
         """
-        if isinstance(args[0], dict):
-            task = args[0].get("task", None)
-            additional_args = args[1:]
-        else:
-            task = " | ".join(args)
-            additional_args = None
         full_task = populate_template(
             self.prompt_templates["managed_agent"]["task"],
-            variables=dict(name=self.name, task=task, addional_args=additional_args),
+            variables=dict(name=self.name, task=str(args[0])),
         )
-        report = self.run(full_task)
+        if self.inherit_knowledge:
+            self.memory.steps = memory_steps
+        report = self.run(full_task, additional_args=additional_args, reset=False)
         answer = populate_template(
             self.prompt_templates["managed_agent"]["report"],
-            variables=dict(name=self.name, task=task, final_answer=report),
+            variables=dict(name=self.name, task=str(args[0]), final_answer=report),
         )
         return answer
 
@@ -486,8 +465,7 @@ class ToolCallingAgent(MultiStepAgent):
         Perform one step in the ReAct framework: the agent thinks, acts, and observes the result.
         Returns None if the step is not final.
         """
-        memory_messages = self.write_memory_to_messages()
-
+        memory_messages = self.memory_to_messages()
         self.input_messages = memory_messages
 
         # Add new step in logs
@@ -496,6 +474,8 @@ class ToolCallingAgent(MultiStepAgent):
         additional_args = {}
         if self.guide:
             additional_args["guide"] = self.guide
+        if self.step_number ==1 and self.initial_guide:
+            additional_args["guide"] = self.initial_guide
         if memory_step.is_final and self.final_guide:
             additional_args["guide"] = self.final_guide
         model_message: ChatMessage = self.model(
@@ -503,20 +483,26 @@ class ToolCallingAgent(MultiStepAgent):
             tools_to_call_from=list(self.tools.values()),
             **additional_args
         )
-        if model_message.finish_reason == "length":
-            raise Exception("Max tokens exceeded.")
         memory_step.model_output_message = model_message
-        model_output = model_message.content
+        memory_step.model_output = model_message.content
         self.logger.log_thought(
-            model_output,
+            model_message.content,
             subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
             title=self.name if hasattr(self, "name") else None,
         )
-        memory_step.model_output = model_output
+        if model_message.finish_reason == "length":
+            msg = "Your response was too long. Please try again with a much shorter response."
+            self.logger.log_observation(
+                msg,
+                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+                title=self.name if hasattr(self, "name") else None,
+            )
+            memory_step.observations = msg
+            return None
         if not model_message.tool_calls:
             memory_step.observations = model_message
             self.logger.log_observation(
-                memory_step.observations,
+                model_message.content,
                 subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
                 title=self.name if hasattr(self, "name") else None,
             )
@@ -525,7 +511,7 @@ class ToolCallingAgent(MultiStepAgent):
         tool_name, tool_call_id = tool_call.function.name, tool_call.id
         tool_arguments = tool_call.function.arguments
         all_previous_tool_arguments = self.tool_call_history.get(tool_name, [])
-        if tool_arguments in all_previous_tool_arguments:
+        if tool_name != "final_answer" and tool_arguments in all_previous_tool_arguments:
             memory_step.observations = f"Try something different. You already tried '{tool_name}' with arguments: {tool_arguments}"
             self.logger.log_observation(
                 memory_step.observations,
@@ -536,57 +522,35 @@ class ToolCallingAgent(MultiStepAgent):
         all_previous_tool_arguments.append(tool_arguments)
         self.tool_call_history[tool_name] = all_previous_tool_arguments
 
-        #except Exception as e:
-        #    raise AgentGenerationError(e, self.logger) from e
-
         memory_step.tool_calls = [ToolCall(name=tool_name, arguments=tool_arguments, id=tool_call_id)]
 
-        # Execute
+        if tool_arguments is None:
+            tool_arguments = {}
+        observation = self.execute_tool_call(tool_name, tool_arguments)
         if tool_name == "final_answer":
-            answer = None
-            if isinstance(tool_arguments, dict):
-                if "answer" in tool_arguments:
-                    answer = tool_arguments["answer"]
-                if not answer and "task" in tool_arguments:
-                    answer = tool_arguments["task"]
-            else:
-                answer = tool_arguments
-                if answer.startswith("answer="):
-                    answer = answer[len("answer="):]
-            if (
-                isinstance(answer, str) and answer in self.state.keys()
-            ):  # if the answer is a state variable, return the value
-                final_answer = self.state[answer]
-            else:
-                final_answer = answer
-            memory_step.action_output = final_answer
-            return final_answer
+            memory_step.action_output = observation
+            return observation
+        observation_type = type(observation)
+        if observation_type in [AgentImage, AgentAudio]:
+            if observation_type == AgentImage:
+                observation_name = "image.png"
+            elif observation_type == AgentAudio:
+                observation_name = "audio.mp3"
+            # TODO: observation naming could allow for different names of same type
+            self.state[observation_name] = observation
+            updated_information = f"Stored '{observation_name}' in memory."
         else:
-            if tool_arguments is None:
-                tool_arguments = {}
-            observation = self.execute_tool_call(tool_name, tool_arguments)
-            observation_type = type(observation)
-            if observation_type in [AgentImage, AgentAudio]:
-                if observation_type == AgentImage:
-                    observation_name = "image.png"
-                elif observation_type == AgentAudio:
-                    observation_name = "audio.mp3"
-                # TODO: observation naming could allow for different names of same type
-
-                self.state[observation_name] = observation
-                updated_information = f"Stored '{observation_name}' in memory."
-            else:
-                updated_information = (
-                    f"You asked the {tool_name}: \"{tool_arguments}\"\n\n"
-                    f"The answer from the {tool_name} is: \"{str(observation).strip()}\""
-                )
-            self.logger.log_observation(
-                updated_information,
-                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
-                title=self.name if hasattr(self, "name") else None,
+            updated_information = (
+                f"You called the {tool_name} with arguments: {tool_arguments}\n\n"
+                f"The answer from the {tool_name} is:\n{str(observation).strip()}"
             )
-            memory_step.observations = updated_information
-            return None
+        self.logger.log_observation(
+            updated_information,
+            subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+            title=self.name if hasattr(self, "name") else None,
+        )
+        memory_step.observations = updated_information
+        return None
 
 
 class CodeAgent(MultiStepAgent):
@@ -661,20 +625,17 @@ class CodeAgent(MultiStepAgent):
         Returns None if the step is not final.
         """
         # Observation
-        memory_messages = self.write_memory_to_messages()
-        if memory_step.is_final:
-            memory_messages[0]["content"][0]["text"] += (
-                "\n\nStarting now, the only tool you can call is the 'final_answer' tool. "
-                "Your python code blob should contain: final_answer(..."
-            )
-        self.input_messages = memory_messages.copy()
+        memory_messages = self.memory_to_messages()
 
+        self.input_messages = memory_messages.copy()
         memory_step.model_input_messages = memory_messages.copy()
 
         # Thought
         additional_args = {}
         if self.guide:
             additional_args["guide"] = self.guide
+        if self.step_number ==1 and self.initial_guide:
+            additional_args["guide"] = self.initial_guide
         if memory_step.is_final and self.final_guide:
             additional_args["guide"] = self.final_guide
         chat_message: ChatMessage = self.model(
@@ -682,8 +643,6 @@ class CodeAgent(MultiStepAgent):
             stop_sequences=["<end_code>", "Observation:"],
             **additional_args,
         )
-        if chat_message.finish_reason == "length":
-            raise Exception("Max tokens exceeded.")
         model_output = chat_message.content
 
         self.logger.log_thought(
@@ -691,6 +650,15 @@ class CodeAgent(MultiStepAgent):
             subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
             title=self.name if hasattr(self, "name") else None,
         )
+        if chat_message.finish_reason == "length":
+            msg = "Your response was too long. Please try again with a much shorter response."
+            self.logger.log_observation(
+                msg,
+                subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
+                title=self.name if hasattr(self, "name") else None,
+            )
+            memory_step.observations = msg
+            return None
 
         memory_step.model_output_message = chat_message
 
@@ -702,9 +670,9 @@ class CodeAgent(MultiStepAgent):
             output, execution_logs, is_final_answer = self.python_executor(
                 code_action,
             )
-            observation = "Your Python console:\n\n" + execution_logs
+            observation = "Your Python console:\n" + execution_logs
             sanitized_output = str(output).replace("`", "'")
-            observation += "\n\nYour Python code output:\n\n" + sanitized_output + "\n\n"
+            observation += "\n\nYour Python code output:\n" + sanitized_output + "\n\n"
         except Exception as e:
             output = None
             observation = "Your Python console:\n\n" + str(e)

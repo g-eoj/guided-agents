@@ -611,7 +611,7 @@ class MLXVLModel(Model):
             # solution for extracting tool JSON without assuming a specific model output format
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
-                content = ""
+                content = text
                 parsed_text = json.loads(maybe_json)
             except json.JSONDecodeError as e:
                 content = f"\n\nTool JSON decode failure: {e}\n\n"
@@ -756,7 +756,7 @@ class MLXVLModel(Model):
                     (SimpleKVCache(), SimpleKVCache()) for n in model.language_model.layers
                 ]
             else:
-                cache = [KVCache(model.language_model.head_dim, n) for n in kv_heads]
+                cache = [KVCache() for n in kv_heads]
 
         repetition_context = input_ids.reshape(-1).tolist()
 
@@ -1021,12 +1021,10 @@ class OpenAIServerModel(Model):
         completion_kwargs.pop("tools", None)
         text = ""
         response = self.client.chat.completions.create(**completion_kwargs, stream=True)
-        print()
+        response.response.raise_for_status()
         for chunk in response:
             _ = chunk.choices[0].delta.content
-            print(_, end="", flush=True)
             text += _
-        print()
         finish_reason = chunk.choices[0].finish_reason
         #self.last_input_token_count = response.usage.prompt_tokens
         #self.last_output_token_count = response.usage.completion_tokens
@@ -1035,7 +1033,7 @@ class OpenAIServerModel(Model):
             # solution for extracting tool JSON without assuming a specific model output format
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
-                content = ""
+                content = text
                 parsed_text = json.loads(maybe_json)
             except json.JSONDecodeError as e:
                 content = f"\n\nTool JSON decode failure: {e}\n\n"

@@ -215,7 +215,7 @@ def get_clean_message_list(
         if role not in MessageRole.roles():
             raise ValueError(f"Incorrect role {role}, only {MessageRole.roles()} are supported for now.")
         if role in role_conversions:
-            message["role"] = role_conversions[role]
+            role = role_conversions[role]
 
         if isinstance(message["content"], list):
             for element in message["content"]:
@@ -230,18 +230,20 @@ def get_clean_message_list(
                     else:
                         element["image"] = encode_image_base64(element["image"])
 
-        if len(output_message_list) > 0 and message["role"] == output_message_list[-1]["role"]:
-            assert isinstance(message["content"], list), "Error: wrong content:" + str(message["content"])
+        if len(output_message_list) > 0 and role == output_message_list[-1]["role"]:
             if flatten_messages_as_text:
-                output_message_list[-1]["content"] += message["content"][0]["text"]
+                output_message_list[-1]["content"] += "\n\n" + message["content"][0]["text"]
             else:
-                output_message_list[-1]["content"] += message["content"]
+                # TODO handle case where first entry is not text
+                text = output_message_list[-1]["content"][0]["text"]
+                text += "\n\n" + message["content"][0]["text"]
+                output_message_list[-1]["content"][0]["text"] = text
         else:
             if flatten_messages_as_text:
                 content = message["content"][0]["text"]
             else:
                 content = message["content"]
-            output_message_list.append({"role": message["role"], "content": content})
+            output_message_list.append({"role": role, "content": content})
 
     return output_message_list
 

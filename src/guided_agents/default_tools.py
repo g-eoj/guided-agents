@@ -73,9 +73,14 @@ class FinalAnswerTool(Tool):
     name = "final_answer"
     description = "Provides a final answer to the given task. After using this tool the task will be complete."
     inputs = {"answer": {"type": "string", "description": "The final answer to the task."}}
-    output_type = "string"
+    output_type = "any"
 
-    def forward(self, answer: str) -> str:
+    def forward(self, answer) -> str:
+        answer = str(answer)
+        match = re.match(r'^answer[ :=]{0,3}', answer)
+        if match:
+            print(match)
+            answer = answer[match.end():]
         return answer
 
 

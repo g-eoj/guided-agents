@@ -289,6 +289,8 @@ def is_same_item(item1, item2):
 
 
 def is_url(path: str) -> bool:
+    if not isinstance(path, str):
+        return False
     scheme = urllib.parse.urlparse(path).scheme
     return scheme in ["file", "http", "https"]
 

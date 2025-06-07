@@ -329,55 +329,52 @@ class MultiStepAgent:
         available_tools = {**self.tools, **self.managed_agents}
         if tool_name not in available_tools:
             return f"Unknown tool {tool_name}, should be instead one of {list(available_tools.keys())}."
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except:
-                pass
         try:
             if isinstance(arguments, str):
                 if tool_name in self.managed_agents:
                     observation = available_tools[tool_name].__call__(arguments, additional_args=self.state, memory_steps=self.memory.steps)
                 else:
-                    observation = available_tools[tool_name].__call__(arguments, sanitize_inputs_outputs=True)
+                    observation = available_tools[tool_name].__call__(arguments)
             elif isinstance(arguments, list):
                 if tool_name in self.managed_agents:
                     observation = available_tools[tool_name].__call__(", ".join(arguments), additional_args=self.state, memory_steps=self.memory.steps)
                 else:
-                    observation = available_tools[tool_name].__call__(*arguments, sanitize_inputs_outputs=True)
+                    observation = available_tools[tool_name].__call__(*arguments)
             elif isinstance(arguments, dict):
                 for key, value in arguments.items():
                     if isinstance(value, str) and value in self.state:
                         arguments[key] = self.state[value]
                 if tool_name in self.managed_agents:
-                    observation = available_tools[tool_name].__call__(arguments, additional_args=self.state, memory_steps=self.memory.steps)
+                    observation = available_tools[tool_name].__call__(str(arguments), additional_args=self.state, memory_steps=self.memory.steps)
                 else:
-                    observation = available_tools[tool_name].__call__(**arguments, sanitize_inputs_outputs=True)
+                    observation = available_tools[tool_name].__call__(**arguments)
             else:
                 return f"Arguments passed to tool should be a dict or string: got a {type(arguments)}."
             return observation
         except Exception as e:
-            return f"Tool call failed with error:\n{e}"
+            return f"Call failed with error:\n{e}"
 
     def step(self, memory_step: ActionStep) -> Union[None, Any]:
         """To be implemented in children classes. Should return either None if the step is not final."""
         pass
 
-    def __call__(self, *args, additional_args=None, memory_steps=None):
+    def __call__(self, task, additional_args=None, memory_steps=None):
         """Adds additional prompting for the managed agent, runs it, and wraps the output.
 
         This method is called only by a managed agent.
         """
         full_task = populate_template(
             self.prompt_templates["managed_agent"]["task"],
-            variables=dict(name=self.name, task=str(args[0])),
+            variables=dict(name=self.name, task=task),
         )
+        reset = False
         if self.inherit_knowledge:
             self.memory.steps = memory_steps
-        report = self.run(full_task, additional_args=additional_args, reset=False)
+            reset = True
+        report = self.run(full_task, additional_args=None, reset=reset)
         answer = populate_template(
             self.prompt_templates["managed_agent"]["report"],
-            variables=dict(name=self.name, task=str(args[0]), final_answer=report),
+            variables=dict(name=self.name, task=task, final_answer=report),
         )
         return answer
 
@@ -501,7 +498,7 @@ class ToolCallingAgent(MultiStepAgent):
             memory_step.observations = msg
             return None
         if not model_message.tool_calls:
-            memory_step.observations = model_message
+            memory_step.observations = "Your previous action attempt failed. This is what you tried:\n" + model_message.content
             self.logger.log_observation(
                 model_message.content,
                 subtitle=f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}",
@@ -542,8 +539,8 @@ class ToolCallingAgent(MultiStepAgent):
             updated_information = f"Stored '{observation_name}' in memory."
         else:
             updated_information = (
-                f"You called the {tool_name} with arguments: {tool_arguments}\n\n"
-                f"The answer from the {tool_name} is:\n{str(observation).strip()}"
+                f"You called {tool_name} with arguments: {tool_arguments}\n\n"
+                f"The answer from {tool_name} is:\n{str(observation).strip()}"
             )
         self.logger.log_observation(
             updated_information,

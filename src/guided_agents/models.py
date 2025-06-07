@@ -26,8 +26,12 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
+import httpx
+import json_repair
 import mlx.core as mx
 import mlx.nn as nn
+import openai
+import tenacity
 
 from .tools import Tool
 from .utils import _is_package_available, encode_image_base64, is_url, make_image_url
@@ -1019,13 +1023,22 @@ class OpenAIServerModel(Model):
             completion_kwargs["extra_body"] = extra_body
         completion_kwargs.pop("tool_choice", None)
         completion_kwargs.pop("tools", None)
-        text = ""
-        response = self.client.chat.completions.create(**completion_kwargs, stream=True)
-        response.response.raise_for_status()
-        for chunk in response:
-            _ = chunk.choices[0].delta.content
-            text += _
-        finish_reason = chunk.choices[0].finish_reason
+
+        for attempt in tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type((httpx.RemoteProtocolError, openai.NotFoundError)),
+            stop=tenacity.stop_after_attempt(6),
+            wait=tenacity.wait_random_exponential(multiplier=2, max=60)
+        ):
+            with attempt:
+                response = self.client.chat.completions.create(**completion_kwargs, stream=True)
+                response.response.raise_for_status()
+                text = ""
+                for chunk in response:
+                    _ = chunk.choices[0].delta.content
+                    #print(_, end="", flush=True)
+                    text += _
+                finish_reason = chunk.choices[0].finish_reason
+
         #self.last_input_token_count = response.usage.prompt_tokens
         #self.last_output_token_count = response.usage.completion_tokens
         tool_call_start = "Action:\n{"

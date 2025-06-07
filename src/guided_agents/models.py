@@ -221,6 +221,8 @@ def get_clean_message_list(
         if role in role_conversions:
             role = role_conversions[role]
 
+        if role == "system" and not flatten_messages_as_text:
+            message["content"] = message["content"][0]["text"]
         if isinstance(message["content"], list):
             for element in message["content"]:
                 if element["type"] == "image" and not is_url(element["image"]):
@@ -477,7 +479,7 @@ class MLXLModel(Model):
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
                 content = ""
-                parsed_text = json.loads(maybe_json)
+                parsed_text = json_repair.loads(maybe_json)
             except json.JSONDecodeError as e:
                 content = f"\n\nTool JSON decode failure: {e}\n\n"
                 content += maybe_json
@@ -616,7 +618,7 @@ class MLXVLModel(Model):
             maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
             try:
                 content = text
-                parsed_text = json.loads(maybe_json)
+                parsed_text = json_repair.loads(maybe_json)
             except json.JSONDecodeError as e:
                 content = f"\n\nTool JSON decode failure: {e}\n\n"
                 content += maybe_json
@@ -1004,6 +1006,7 @@ class OpenAIServerModel(Model):
         **kwargs,
     ) -> ChatMessage:
         completion_kwargs = self._prepare_completion_kwargs(
+            #flatten_messages_as_text=True,
             messages=messages,
             stop_sequences=stop_sequences,
             guide=guide,
@@ -1043,14 +1046,13 @@ class OpenAIServerModel(Model):
         #self.last_output_token_count = response.usage.completion_tokens
         tool_call_start = "Action:\n{"
         if tools_to_call_from and tool_call_start in text:
-            # solution for extracting tool JSON without assuming a specific model output format
-            maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
+            content = text
             try:
-                content = text
-                parsed_text = json.loads(maybe_json)
+                # solution for extracting tool JSON without assuming a specific model output format
+                maybe_json = "{" + text.split(tool_call_start, 1)[-1][::-1].split("}", 1)[-1][::-1] + "}"
+                parsed_text = json_repair.loads(maybe_json)
             except json.JSONDecodeError as e:
-                content = f"\n\nTool JSON decode failure: {e}\n\n"
-                content += maybe_json
+                content += f"\n\nTool call failure: {e}"
                 parsed_text = {}
             finally:
                 tool_name = parsed_text.get(self.tool_name_key, None)
@@ -1061,7 +1063,7 @@ class OpenAIServerModel(Model):
                         content=content,
                         tool_calls=[
                             ChatMessageToolCall(
-                                id=uuid.uuid4(),
+                                id=str(uuid.uuid4()),
                                 type="function",
                                 function=ChatMessageToolCallDefinition(name=tool_name, arguments=tool_arguments),
                             )

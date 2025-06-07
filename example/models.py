@@ -13,14 +13,31 @@
 # limitations under the License.
 
 
-import mlx.core as mx
-import numpy
 import os
+import threading
+
+import mlx.core as mx
 import transformers
 import xgrammar
-
-from guided_agents import BaseMLXLogitsProcessor, CodeAgent, MLXLModel, MLXVLModel, OpenAIServerModel, ToolCallingAgent
 from xgrammar.kernels.apply_token_bitmask_mlx import apply_token_bitmask_mlx
+
+from guided_agents import BaseMLXLogitsProcessor, MLXLModel, OpenAIServerModel
+
+
+class LockedMLXModel:
+
+    def __init__(self, model_id, max_tokens):
+        self.lock = threading.Lock()
+        self.model = MLXLModel(
+            model_id=model_id,
+            max_tokens=max_tokens,
+            logits_processor=RegexLogitsProcessor
+        )
+        self.model_id=model_id
+
+    def __call__(self, *args, **kwargs):
+        with self.lock:
+            return self.model.__call__(*args, **kwargs)
 
 
 class RegexLogitsProcessor(BaseMLXLogitsProcessor):
@@ -67,15 +84,20 @@ class XGrammarLogitsProcessor:
 
 
 # MLX-LM model
-#coder_model = default_model = MLXLModel(
+#coder_model = LockedMLXModel(
+#    model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+#    max_tokens=5000,
+#)
+
+#model = MLXLModel(
 #    model_id="mlx-community/Qwen2.5-7B-Instruct-4bit",
-#    #model_id="mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
-#    #model_id="mlx-community/DeepSeek-R1-Distill-Qwen-32B-6bit",
-#    #model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
-#    #model_id="mlx-community/QwQ-32B-Preview-6bit",
-#    #model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
-#    #model_id="mlx-community/QwQ-32B-Preview-6bit",
-#    #model_id="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+#    model_id="mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+#    model_id="mlx-community/DeepSeek-R1-Distill-Qwen-32B-6bit",
+#    model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+#    model_id="mlx-community/QwQ-32B-Preview-6bit",
+#    model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+#    model_id="mlx-community/QwQ-32B-Preview-6bit",
+#    model_id="mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
 #    logits_processor=RegexLogitsProcessor,
 #    max_tokens=5000,
 #)
@@ -84,32 +106,47 @@ class XGrammarLogitsProcessor:
 #model = MLXVLModel(
 #    model_id="mlx-community/Qwen2.5-VL-32B-Instruct-4bit",
 #    model_id="mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
-#    #model_id="mlx-community/Qwen2.5-Coder-14B-Instruct-4bit",
+#    model_id="mlx-community/Qwen2.5-Coder-14B-Instruct-4bit",
 #    model_id="mlx-community/gemma-3-12b-it-4bit",
 #    logits_processor=RegexLogitsProcessor,
 #    max_tokens=5000,
 #)
 
 # Local vLLM model
-model = OpenAIServerModel(
+#model = coder_model = OpenAIServerModel(
+#    model_id="Qwen/Qwen3-4B",
 #    model_id="Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
 #    model_id="ISTA-DASLab/Mistral-Small-3.1-24B-Instruct-2503-GPTQ-4b-128g",
 #    model_id="ISTA-DASLab/gemma-3-27b-it-GPTQ-4b-128g",
-#    #model_id="Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
-#    model_id="Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4",
+#    model_id="Qwen/Qwen2.5-VL-7B-Instruct-AWQ",
+#    model_id="Qwen/Qwen2.5-Coder-32B-Instruct-GPTQ-Int4",
 #    model_id="stelterlab/Mistral-Small-24B-Instruct-2501-AWQ",
-    model_id="Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4",
-    api_base="http://192.168.1.69:8000/v1",
+#    model_id="Qwen/Qwen2.5-32B-Instruct-GPTQ-Int4",
+#    api_base="http://192.168.1.69:8000/v1",
+#    api_key=os.environ["VLLM_API_KEY"],
+#    max_tokens=3000,
+#    temperature=0.0,
+#)
+
+# RunPod vLLM model
+pod_id = "jh1qxw709tncfr"
+coder_model = model = OpenAIServerModel(
+#    model_id="Qwen/Qwen2.5-VL-7B-Instruct",
+#    model_id="mistralai/Pixtral-12B-2409",
+#    model_id="kosbu/QVQ-72B-Preview-AWQ",
+#    model_id="Qwen/Qwen3-32B",
+#    model_id="Qwen/Qwen3-30B-A3B",
+#    model_id="Qwen/QwQ-32B",
+#    model_id="deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+#    model_id="cognitivecomputations/Qwen3-235B-A22B-AWQ",
+#    model_id="mistralai/Mistral-Small-3.1-24B-Instruct-2503",
+    model_id="Qwen/Qwen3-14B",
+#    model_id="deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+#    model_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+#    model_id="Qwen/Qwen2.5-VL-32B-Instruct",
+#    model_id="RedHatAI/Mistral-Small-3.1-24B-Instruct-2503-quantized.w8a8",
+    api_base=f"https://{pod_id}-8000.proxy.runpod.net/v1",
     api_key=os.environ["VLLM_API_KEY"],
     max_tokens=5000,
     temperature=0.0,
 )
-
-# RunPod vLLM model
-#model = OpenAIServerModel(
-#    model_id="Qwen/Qwen2.5-VL-32B-Instruct-AWQ",
-#    api_base="https://tcbqql491rw228-8000.proxy.runpod.net/v1",
-#    api_key=os.environ["VLLM_API_KEY"],
-#    max_tokens=5000,
-#    temperature=0.0,
-#)

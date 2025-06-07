@@ -13,127 +13,16 @@
 # limitations under the License.
 
 
+import concurrent.futures
+
 from guided_agents import Tool
-
-
-CHUNK_SIZE = 20000
-
-
-class DOCXReader(Tool):
-    name = "docx_reader"
-    description = "This is a tool that converts docx files into markdown."
-    inputs = {
-        "file_path": {
-            "type": "string",
-            "description": "Path to a docx file.",
-        },
-    }
-    output_type = "string"
-
-    def forward(self, file_path: str):
-        import docx
-        import re
-        from docx import Document
-        text = ""
-
-        document = Document(file_path)
-        for x in document.iter_inner_content():
-            if isinstance(x, docx.text.paragraph.Paragraph):
-                if "heading" in x.style.name.lower():
-                    text += "#" * int(x.style.name.lower().split()[-1]) + " "
-                if "list" in x.style.name.lower():
-                    text += "- "
-                text += x.text + "\n"
-            elif isinstance(x, docx.table.Table):
-                for row in x.rows:
-                    for cell in row.cells:
-                        text += cell.text + ", "
-                    text += "\n"
-        text = re.sub(r'[\n]{3,}', "\n\n", text)
-        return text
-
-
-class ExcelReader(Tool):
-    name = "excel_reader"
-    description = (
-        "This is a tool that converts excel files into text. "
-        "Each sheet will be followed by two tables of CSVs. "
-        "The first table contains the values of the cells in the sheet. "
-        "The second table contains the style ID of the cell."
-    )
-    inputs = {
-        "file_path": {
-            "type": "string",
-            "description": "Path to the excel file.",
-        },
-    }
-    output_type = "string"
-
-    def forward(self, file_path: str):
-        import openpyxl
-
-        work_book = openpyxl.open(file_path)
-        text = ""
-        for sheet in work_book:
-            values = ""
-            style_ids = ""
-            text += str(sheet) + "\n"
-            for row in sheet.iter_rows():
-                for cell in row:
-                    values += str(cell.value) + ", "
-                    style_ids += str(cell.style_id) + ", "
-                values = values[:-2] + "\n"
-                style_ids = style_ids[:-2] + "\n"
-            text += values
-            text += "\n"
-            text += style_ids
-            text += "\n"
-        text +="\n"
-        return text
-
-
-class FinalAnswerReviewer(Tool):
-    name = "final_answer"
-    description = "When you are done with your task, use this tool to provide your answer."
-    inputs = {
-        "answer": {
-            "type": "string",
-            "description": "The answer to your task."
-        },
-    }
-    output_type = "string"
-
-    def __init__(self, model, question: str, requirements: str):
-        super().__init__(self)
-        self.model = model
-        self.question = question
-        self.requirements = requirements
-
-    def forward(self, answer: str):
-        messages = [
-            {"role": "user", "content":
-                [
-                    {
-                        "type": "text",
-                        "text": (
-                            f"Check if this answer '{answer}' meets these requirements:\n{self.requirements}"
-                            f"\n\nIf the answer '{answer}' does meet the requirements, say the answer. "
-                            "If the answer doesn't meet the requirements, say the fixed answer."
-                        )
-                    }
-                ]
-            }
-        ]
-        text = str(self.model(messages=messages).content)
-        print(text)
-        return text or answer
 
 
 class GoogleScholarSearchTool(Tool):
     name = "paper_search"
-    description = "Search the web for research papers."
+    description = "Search the web for research papers to read."
     inputs = {
-        "query": {"type": "string", "description": "The search query to perform."},
+        "query": {"type": "string", "description": "The topic or title of a paper you are looking for. Don't give this tool general queries as it is not designed to return comprehensive results."},
     }
     output_type = "string"
 
@@ -176,66 +65,26 @@ class GoogleSearchTool(Tool):
         self.session = requests_cache.CachedSession("google_search_cache", allowable_methods=["POST"])
 
     def forward(self, query: str) -> str:
-        result = self.session.post(url=self.url, data={"q": query, "num": 8}, headers=self.headers)
+        result = self.session.post(url=self.url, data={"q": query}, headers=self.headers)
         result.raise_for_status()
         result = result.json()["organic"]
         text = "\n"
         for r in result:
-            text += f"- [{r['title']}]({r['link']}): {r.get('snippet', '')}\n"
+            text += f"- [{r['title']}]({r['link']})\n\tSnippet: {r.get('snippet', '')}\n"
         return text
 
 
-class MLXAudioTranscribe(Tool):
-    name = "audio_transcribe"
-    description = "Transcribe speech from audio files."
+class NoteToSelf(Tool):
+    name = "note_to_self"
+    description = "Leave a note about anything you want to remember."
     inputs = {
-        "file_path": {"type": "string", "description": "Audio file to transcribe."},
+        "note": {"type": "string", "description": "The note."},
     }
     output_type = "string"
 
-    def forward(self, file_path: str) -> str:
-        import mlx_whisper
-        text = mlx_whisper.transcribe(file_path)["text"]
-        return text
-
-
-class PPTXReader(Tool):
-    name = "pptx_reader"
-    description = "This tool converts pptx files into a list. Each element of the list is text from one slide."
-    inputs = {
-        "file_path": {"type": "string", "description": "Path to a pptx file."},
-    }
-    output_type = "array"
-
-    def forward(self, file_path: str) -> str:
-        from pptx import Presentation
-        presentation = Presentation(file_path)
-        slides_text = []
-        for slide in presentation.slides:
-            text = ""
-            element = slide.element
-            for x in element.iterdescendants():
-                if x.text and hasattr(x, "xml") and x.xml.startswith("<a:r"):
-                    text += x.text + "\n"
-            slides_text.append(text)
-        return slides_text
-
-
-class TXTReader(Tool):
-    name = "txt_reader"
-    description = "This is a tool that converts txt files into text."
-    inputs = {
-        "file_path": {
-            "type": "string",
-            "description": "Path to the txt file.",
-        },
-    }
-    output_type = "string"
-
-    def forward(self, file_path: str):
-        with open(file_path, "r") as h:
-            text = "".join(h.readlines())
-        return text
+    def forward(self, note: str) -> str:
+        import pprint
+        return pprint.pformat(note)
 
 
 class WebReader(Tool):
@@ -253,9 +102,15 @@ class WebReader(Tool):
     }
     output_type = "string"
 
-    def __init__(self, model):
+    def __init__(self, model, chunk_size=10000, guide='start: /.*/', max_iterations_per_page=100, max_workers=1, min_notes_if_possible=3, logger=None):
         super().__init__(self)
         self.model = model
+        self.chunk_size = chunk_size
+        self.logger = logger
+        self.guide = guide
+        self.max_iterations_per_page = max_iterations_per_page
+        self.max_workers = max_workers
+        self.min_notes_if_possible = min_notes_if_possible
 
     def get_page(self, path:str):
         import re
@@ -266,7 +121,7 @@ class WebReader(Tool):
         from playwright.sync_api import sync_playwright
 
         hostname = urlparse(path).hostname
-        if hostname and "researchgate.net" in hostname:
+        if hostname in ["www.huggingface.co", "www.researchgate.net"]:
             raise ValueError(f"{hostname} is forbidden. Try a different website.")
         md = ""
         with sync_playwright() as playwright:
@@ -296,134 +151,82 @@ class WebReader(Tool):
         md = re.sub(r"\n{3,}", "\n\n", md)
         return md
 
+    def generate(guide, messages, model):
+        return model(
+            messages=messages,
+            guide=guide,
+        ).content
+
     def forward(self, path: str, query: str):
+
         try:
             md = self.get_page(path)
         except ValueError as e:
             print(e)
             return str(e)
-        notes = []
-        chunk_size = CHUNK_SIZE
-        chunk_overlap = CHUNK_SIZE * 2
-        stage = 0
-        for i in range(min(len(md) // chunk_size + 1, 60)):
-            windows = []
+
+        messages_per_chunk = []
+        chunk_size = self.chunk_size
+        chunk_overlap = chunk_size // 2
+        system_text = "You carefully find and organize information."
+        for i in range(min(len(md) // chunk_size + 1, self.max_iterations_per_page)):
             chunk = "<chunk_start>" + md[i*chunk_size:(i+1)*chunk_size+chunk_overlap] + "<chunk_end>"
             messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_text}]},
                 {"role": "user", "content":
                     [
                         {
                             "type": "text",
                             "text": (
-                                f"Look for information relevant to '{query}', using this chunk of markdown:\n\n{chunk}\n\n"
-                                f"Now, only using the chunk of markdown, make a note about '{query}' with a short sentence or a list, unless the chunk isn't relevant. "
-                                f"If the chunk isn't relevant to '{query}', then say <not_relevant>."
+                                f"Look for information relevant to '{query}' in this chunk of markdown:\n\n{chunk}\n\n"
+                                f"Now, only using the chunk of markdown, make a note of any relevant information. "
+                                f"If you don't find any relevant informtation, the note should only say '<not_relevant>'."
                             )
                         }
                     ]
                 }
             ]
-            note = self.model(messages=messages).content
-            if "<not_relevant>" not in note or notes:
+            messages_per_chunk.append(messages)
+
+        notes = []
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        futures = [executor.submit(WebReader.generate, self.guide, messages, self.model) for messages in messages_per_chunk]
+        for future in futures:
+            if future.cancelled():
+                continue
+            note = future.result()
+            if self.logger:
+                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
+                self.logger.info(msg=note, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
+            if "<not_relevant>" not in note:
+                note = note.split('</think>')[-1].lstrip('\\n')
                 notes.append(note)
-                if len(notes) > 2 or "<not_relevant>" in note:
-                    break
+            if len(notes) >= self.min_notes_if_possible:
+                executor.shutdown(wait=True, cancel_futures=True)
+
         if len(notes) > 1:
             messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_text}]},
                 {"role": "user", "content":
                     [
                         {
                             "type": "text",
                             "text": (
-                                "Combine these notes. "
-                                f"Discard information that is not relevant to '{query}'. "
+                                f"Combine these notes to help answer '{query}'. "
                                 "Check if the notes have contradictory information. "
-                                f"If they do, discard the contradictory note with the least information:\n\n{notes}"
+                                f"If they do, explain the contradictions:\n\n{notes}"
                             )
                         }
                     ]
                 }
             ]
-            answer = self.model(messages=messages).content
+            answer = WebReader.generate(self.guide, messages, self.model)
+            if self.logger:
+                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
+                self.logger.info(msg=answer, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
+            answer = answer.split('</think>')[-1].lstrip('\\n')
             return answer
         elif notes:
             return notes[0]
         else:
-            return "No answers found."
-
-
-class WikipediaReader(Tool):
-    name = "wikipedia_reader"
-    description = "Reads a Wikipedia article then makes notes on question about the article."
-    inputs = {
-        "topic": {
-            "type": "string",
-            "description": "The topic of the Wikipedia article."
-        },
-        "query": {
-            "type": "string",
-            "description": "Ask a simple but very specific question about what you want to learn."
-        }
-    }
-    output_type = "string"
-
-    def __init__(self, model):
-        super().__init__(self)
-        self.model = model
-
-    def forward(self, topic: str, query: str):
-        import markdownify
-        import requests
-        from bs4 import BeautifulSoup, SoupStrainer
-
-        try:
-            search_result = requests.get(f"https://api.wikimedia.org/core/v1/wikipedia/en/search/page?q={topic}&limit=1")
-            key = search_result.json()["pages"][0]["key"]
-            page_html = requests.get(f"https://api.wikimedia.org/core/v1/wikipedia/en/page/{key}/html")
-            soup = BeautifulSoup(
-                page_html.text, 'html.parser', parse_only=SoupStrainer("body")
-            )
-            md = markdownify.markdownify(
-                str(soup),
-                strip=["a"],
-                heading_style="ATX",
-                table_infer_header=True,
-            )
-            md = md.split("## See also\n")[0]
-            md = md.split("## References\n")[0]
-
-            answers = []
-            chunk_size = CHUNK_SIZE
-            chunk_overlap = CHUNK_SIZE // 2
-            step = 0
-            for i in range(len(md) // chunk_size + 1):
-                chunk = "<chunk_start>" + md[i*chunk_size:(i+1)*chunk_size+chunk_overlap] + "<chunk_end>"
-                messages = [
-                    {"role": "user", "content":
-                        [
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Look for information relevant to '{query}', using this chunk of markdown:\n\n{chunk}\n\n"
-                                    f"Now make a short note of the information in one sentence or list, unless the chunk isn't relevant. "
-                                    f"If the chunk isn't relevant to '{query}', then just say <not_relevant>."
-                                )
-                            }
-                        ]
-                    }
-                ]
-                answer = self.model(messages=messages).content
-                if "<not_relevant>" not in answer:
-                    answers.append(answer)
-                    step += 1
-                elif step:
-                    step += 1
-                if step > 2:
-                    break
-            if answers:
-                return f"Notes: {str(answers)}"
-            else:
-                return "No answers found."
-        except Exception as e:
-            print(e)
-            return(f"No articles found about {topic}.")
+            return "No answers found. Please use a different link or rephrase your query."

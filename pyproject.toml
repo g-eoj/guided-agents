@@ -13,19 +13,20 @@ dependencies = [
   "jinja2>=3.1.4",
   "rich>=13.9.4",
   "numba>=0.61.0",
+  "tenacity>=9.1.2",
+  "json-repair>=0.44.1",
 ]
 
 [project.optional-dependencies]
 models = [
   "mlx-lm",
-  "mlx-vlm",
+  "mlx-vlm>0.1.21",
   "mlx-whisper",
   "openai",
   "xgrammar",
 ]
 tools = [
   "docx",
-  "duckduckgo-search",
   "markdownify",
   "openpyxl",
   "pandas",
@@ -35,6 +36,7 @@ tools = [
   "python-pptx",
   "requests-cache",
   "scipy",
+  "sounddevice",
   "tabulate",
 ]
 

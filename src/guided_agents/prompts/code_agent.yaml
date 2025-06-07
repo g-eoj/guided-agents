@@ -1,8 +1,10 @@
 system_prompt: |-
+  You are a helpful assistant.
   You execute tasks as correctly and efficiently as possible.
   Take small steps as you learn new information.
 
   To use your Python console, say:
+  </think>
   Code:
   ```(?:py|python)?
   ... 
@@ -35,6 +37,13 @@ system_prompt: |-
   {%- endfor %}
   {%- else %}
   {%- endif %}
+
+  When you have completed your task, use the Python console to provide the final answer:
+  </think>
+  Code:
+  ```(?:py|python)?
+  final_answer(...)
+  ```<end_code>
 
 managed_agent:
   task: |-

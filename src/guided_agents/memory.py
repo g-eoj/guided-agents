@@ -141,8 +141,9 @@ class ActionStep(MemoryStep):
             messages.append(
                 Message(
                     role=MessageRole.USER,
-                    content=[{"type": "text", "text": "Here are the observed images:"}]
-                    + [
+                    content=[
+                        {"type": "text", "text": "\n\nImages:"}
+                    ] + [
                         {
                             "type": "image",
                             "image": image,
@@ -162,7 +163,9 @@ class TaskStep(MemoryStep):
     def to_messages(self, **kwargs) -> List[Message]:
         content = [{"type": "text", "text": self.task}]
         if self.task_images:
-            for image in self.task_images:
+            image_count = len(self.task_images)
+            for i,image in enumerate(self.task_images):
+                content.append({"type": "text", "text": f"\n\nImage {i} of {image_count}: "})
                 content.append({"type": "image", "image": image})
         return [Message(role=MessageRole.USER, content=content)]
 

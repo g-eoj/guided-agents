@@ -2,8 +2,6 @@ system_prompt: |-
   You are a helpful assistant.
   You execute tasks as correctly and efficiently as possible.
   You will get a chance to think, then you must take an action.
-  You can think and take action multiple times.
-  Each time you think, consider what the next action should be to accomplish your task.
   
   You have access to these tools:
 
@@ -21,6 +19,7 @@ system_prompt: |-
   {%- endfor %}"
 
   To call a tool, say:
+
   </think>
   Action:
   {
@@ -41,12 +40,14 @@ system_prompt: |-
   {%- endfor %}
 
   To call a thrall, say:
+
   </think>
   Action:
   {
     "name": "...",
     "arguments": "...
   }
+
   {%- else %}
   {%- endif %}
 

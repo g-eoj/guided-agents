@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pdf2image
+from PIL import Image, ImageChops
 
 from guided_agents import Tool
 
@@ -147,3 +149,42 @@ class TXTReader(Tool):
         with open(self.file_path, "r") as h:
             text = "".join(h.readlines())
         return text
+
+
+# helper functions
+def get_lo_exe() -> str:
+    name = "soffice"
+    path = None
+    match sys.platform:
+        case "win32":
+            path = pathlib.Path(os.environ["PROGRAMFILES"]) / "LibreOffice/program"
+        case "darwin":
+            path = pathlib.Path("/Applications/LibreOffice.app/Contents/MacOS")
+    if not (exe := shutil.which(name, path=path)):
+        raise FileNotFoundError("LibreOffice not found")
+    return exe
+
+def to_images(file_path):
+    images = []
+    if file_path.endswith("pdf"):
+        images += pdf2image.convert_from_path(file_path, dpi=150)
+    elif not file_path.endswith("mp3"):
+        with tempfile.TemporaryDirectory() as outdir:
+            cmd = [get_lo_exe(), "--convert-to", "pdf", "--outdir", outdir, file_path]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL)
+            for pdf in pathlib.Path(outdir).glob("*.pdf"):
+                images += pdf2image.convert_from_path(pdf, dpi=150)
+    images = [trim(image) for image in images]
+    return images
+
+def trim(image):
+    bg = Image.new(image.mode, image.size, "white")
+    diff = ImageChops.difference(image, bg)
+    bbox = diff.getbbox()
+    if bbox:
+        bbox = list(bbox)
+        bbox[0] = bbox[0] - 14
+        bbox[1] = bbox[1] - 14
+        bbox[2] = bbox[2] + 14
+        bbox[3] = bbox[3] + 28
+        return image.crop(bbox)

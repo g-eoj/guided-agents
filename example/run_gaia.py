@@ -33,10 +33,18 @@ from tqdm.auto import tqdm
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def run(question, file_path, log_dir):
+def run(question, file_path, log_dir, first_to=3, max_samples=5):
+    answer_counts = {}
     try:
-        answer = run_agents(question, file_path, log_dir=log_dir, strict_answers=True)
-        return answer
+        for i in range(max_samples):
+            answer = run_agents(question, file_path, log_dir=f"{log_dir}-{i+1}", strict_answers=True)
+            if answer in answer_counts:
+                answer_counts[answer] += 1
+            else:
+                answer_counts[answer] = 1
+            if answer_counts[answer] == first_to:
+                return answer
+        return None
     except Exception as e:
         traceback.print_exc()
         msg = f"ERROR: {e}"
@@ -47,7 +55,9 @@ def run(question, file_path, log_dir):
 # configure run
 gaia_ds = datasets.load_dataset("gaia-benchmark/GAIA", "2023_level1")
 gaia_ds_val = gaia_ds["validation"]
-max_workers = 8
+first_to = 3
+max_workers = 2
+max_samples = 5
 
 task_ids = []
 questions = []
@@ -71,15 +81,18 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
     futures = {}
     for i,question in enumerate(questions):
         log_dir = f"{base_log_dir}/{i+1:02}"
-        futures[executor.submit(run, question, file_paths[i], log_dir)] = i
+        futures[executor.submit(run, question, file_paths[i], log_dir, first_to, max_samples)] = i
     answers = {}
     correct = {}
     for future in concurrent.futures.as_completed(futures):
-        progress_bar.update(1)
         i = futures[future]
         answers[i] = future.result()
-        correct[i] = question_scorer(str(answers[i]), correct_answers[i])
+        correct[i] = question_scorer(
+            str(answers[i]),
+            correct_answers[i]
+        )
         correct_answers_count += int(correct[i])
+        progress_bar.update(1)
         progress_bar.set_postfix_str(f"Accuracy: {round(correct_answers_count / len(correct), 2)}")
 
 scores = pandas.DataFrame(

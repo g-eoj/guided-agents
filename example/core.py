@@ -17,18 +17,9 @@ import datetime
 import enum
 import logging
 import os
-import pathlib
-import pprint
-import shutil
-import subprocess
-import sys
-import tempfile
 
-import numpy
-import pdf2image
-from file_loaders import *
+from guides import *
 from models import *
-from PIL import Image, ImageChops
 from tools import *
 
 from guided_agents import CodeAgent, ToolCallingAgent
@@ -55,43 +46,6 @@ class ThinkingEffort(enum.IntEnum):
     OVERTHINK_3=21
 
 
-def get_lo_exe() -> str:
-    name = "soffice"
-    path = None
-    match sys.platform:
-        case "win32":
-            path = pathlib.Path(os.environ["PROGRAMFILES"]) / "LibreOffice/program"
-        case "darwin":
-            path = pathlib.Path("/Applications/LibreOffice.app/Contents/MacOS")
-    if not (exe := shutil.which(name, path=path)):
-        raise FileNotFoundError("LibreOffice not found")
-    return exe
-
-def to_images(file_path):
-    images = []
-    if file_path.endswith("pdf"):
-        images += pdf2image.convert_from_path(file_path, dpi=150)
-    elif not file_path.endswith("mp3"):
-        with tempfile.TemporaryDirectory() as outdir:
-            cmd = [get_lo_exe(), "--convert-to", "pdf", "--outdir", outdir, file_path]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL)
-            for pdf in pathlib.Path(outdir).glob("*.pdf"):
-                images += pdf2image.convert_from_path(pdf, dpi=150)
-    images = [trim(image) for image in images]
-    return images
-
-def trim(image):
-    bg = Image.new(image.mode, image.size, "white")
-    diff = ImageChops.difference(image, bg)
-    bbox = diff.getbbox()
-    if bbox:
-        bbox = list(bbox)
-        bbox[0] = bbox[0] - 14
-        bbox[1] = bbox[1] - 14
-        bbox[2] = bbox[2] + 14
-        bbox[3] = bbox[3] + 28
-        return image.crop(bbox)
-
 def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
 
     # logging
@@ -109,47 +63,10 @@ def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
     logger.addHandler(h)
 
     # baseline thinking effort
-    task_complexity = 1
+    task_complexity = ThinkingEffort.NORMAL
     # increase thinking effort based on task sentence count
-    sentence_count = max(min(len(question.split(". ")), 8), 1)
-    task_complexity += numpy.log(sentence_count**ThinkingEffort.UNDERTHINK_1)
-
-    # file processing
-    additional_args = {}
-    images = []
-    file_loaders = []
-    if file_path:
-        file_name = pathlib.Path(file_path).name
-        file_suffix = pathlib.Path(file_path).suffix
-
-        if file_suffix in [".jpg", ".png"]:
-            images = [file_path]
-        if file_suffix in [".docx"]:
-            #additional_args["file_path"] = file_path
-            file_loaders.append(DOCXReader(file_path))
-            #images = to_images(file_path)
-        if file_suffix in [".mp3"]:
-            file_loaders.append(MLXAudioTranscribe(file_path))
-        if file_suffix in [".pptx"]:
-            #additional_args["file_path"] = file_path
-            file_loaders.append(PPTXReader(file_path))
-            #images = to_images(file_path)
-        if file_suffix in [".xlsx"]:
-            #additional_args["file_path"] = file_path
-            file_loaders.append(ExcelReader(file_path))
-            #images = to_images(file_path)
-        if file_suffix in [".txt", ".py"]:
-            file_loaders.append(TXTReader(file_path))
-            #images = to_images(file_path)
-
-        for loader in file_loaders:
-            question += f"\n\n{file_name} as text:\n" + pprint.pformat(loader.forward())
-
-    if images:
-        question += f"\n\n{file_name} as images:\n"
-        # increase thinking effort based on image count
-        image_count = min(len(images), 10)
-        task_complexity += numpy.log(image_count**ThinkingEffort.NORMAL)
+    sentence_count = max(min(len(question.split(". ")), 20), 1)
+    task_complexity += numpy.log(sentence_count**ThinkingEffort.NORMAL)
 
     # gaia requirements
     if strict_answers:
@@ -162,31 +79,26 @@ def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
     else:
         final_answer_requirements = "\n\nBe nice."
 
-
-    def guide(act='act: /.{0,500}/', paragraph_limit=1, sentence_limit=3):
-        core = (
-            'start: <[151667]> NL think <[151668]> NL act\n'
-            f'think: paragraph{{1,{int(paragraph_limit)}}}\n'
-            f'paragraph: sentence{{1,{int(sentence_limit)}}} NL\n'
-            'sentence[lazy]: /.+([\\.\\?!]{1}[ \\n]{1})/\n'
-            'NL: /\\n/\n'
-            'Q: /"/ \n'
-        )
-        return core + act
-
+    # lark acts
     action_act = (
-        'act: "Action:" NL "{" NL action_name NL action_args NL\n'
-        'action_name: Q "name" Q ":  "  Q ACTION_NAME Q\n'
+        'act: "Action:" NL "{" NL action_name NL action_args NL "}"\n'
+        'action_name: Q "name" Q ": " Q ACTION_NAME Q\n'
         'ACTION_NAME: /[a-z_]+/\n'
-        'action_args[lazy]: Q "arguments" Q ":  [" Q /.+/ Q "]" NL "}" NL\n'
+        'action_args[lazy]: Q "arguments" Q ": [" Q ACTION_ARGS Q "]"\n'
+        'ACTION_ARGS: /.+/\n'
     )
-
     code_act=(
-        'act: "Code:" NL "```python" NL /[^`]+/ "```<end_code>"\n'
+        'act[lazy]: "Code:" NL "```python" NL CODE+ "```<end_code>"\n'
+        'CODE: /[^`\\n]+/ NL\n'
     )
-
+    final_answer_code_act=(
+        'act[lazy]: "Code:" NL "```python" NL CODE+ FINAL_ANSWER "```<end_code>"\n'
+        'CODE: /[^`\\n]+/ NL\n'
+        'FINAL_ANSWER: "final_answer(" /[^`\\n]+/  ")" NL\n'
+    )
     note_act=(
-        'act: "Note:" /.*/\n'
+        'act: "<not_relevant>" | NOTE\n'
+        'NOTE: "Note: " /.+/\n'
     )
 
     # agent definitions
@@ -195,17 +107,26 @@ def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
         description="Ask this thrall to find information online. Give it detailed instructions about the information you are looking for. Information obtained from this thrall doesn't need to be verifed.",
         model=model,
         inherit_knowledge=False,
-        guide=guide(action_act),
+        guide=LarkReasoningGuide(
+            act=action_act,
+            model_id=model.model_id,
+            reasoning_paragraph_limit=3,
+            reasoning_sentence_limit=5
+        )(),
         tools=[
             GoogleSearchTool(api_key=os.environ["SERPER_API_TOKEN"]),
             GoogleScholarSearchTool(api_key=os.environ["SERPER_API_TOKEN"]),
             WebReader(
                 model,
-                chunk_size=int(3e4),
-                guide=guide(note_act, paragraph_limit=2),
+                guide=LarkReasoningGuide(
+                    act=note_act,
+                    model_id=model.model_id,
+                    reasoning_paragraph_limit=3,
+                    reasoning_sentence_limit=5
+                )(),
                 max_iterations_per_page=50,
-                max_workers=1,
-                min_notes_if_possible=2,
+                max_workers=3,
+                min_notes_if_possible=3,
                 logger=logger
             ),
         ],
@@ -213,61 +134,62 @@ def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
         verbosity_level=-1,
         logger=logger,
     )
+
     coder = CodeAgent(
         name="coder",
-        description="Ask this thrall to do computations with Python. Do not give it code, just give it a task.",
+        description="Ask this thrall to do computations with Python. Do not give it code, just give it a task. Don't ask it to find information online, it doesn't have access to the internet.",
         model=coder_model,
         inherit_knowledge=False,
-        guide=guide(code_act),
-        #guide=(
-        #    r'<think>\nDo I use the \'final_answer\' function now\? '
-        #    fr'([^\n\.]+?\.){{1,{ThinkingEffort.NORMAL}}}\n\n'
-        #    r'</think>\n'
-        #    r'Code:\n```(?:py|python)?\n[^`]+?\n```<end_code>'
-        #),
-        #final_guide=(
-        #    r'<think>\nI must use the \'final_answer\' function now\. '
-        #    fr'([^\n\.]+?\.){{1,{ThinkingEffort.NORMAL}}}\n\n'
-        #    r'</think>\n'
-        #    r'Code:\n```(?:py|python)?\nfinal_answer\("[^`]+?"\)\n```<end_code>'
-        #),
+        guide=LarkReasoningGuide(
+            act=code_act,
+            model_id=model.model_id,
+            reasoning_paragraph_limit=5,
+            reasoning_sentence_limit=5
+        )(),
+        final_guide=LarkReasoningGuide(
+            act=final_answer_code_act,
+            model_id=model.model_id,
+            reasoning_paragraph_limit=5,
+            reasoning_sentence_limit=5
+        )(),
         tools=[],
         additional_authorized_imports=["numpy","pandas"],
-        max_steps=MaxSteps.SOME,
+        max_steps=MaxSteps.FEW,
         verbosity_level=-1,
         logger=logger,
     )
+
+    brain_tools = [NoteToSelf()]
+    if file_path:
+        brain_tools.append(
+            FileReader(
+                model,
+                guide=LarkReasoningGuide(
+                    act=note_act,
+                    model_id=model.model_id,
+                    reasoning_paragraph_limit=3,
+                    reasoning_sentence_limit=5
+                )(),
+                max_iterations_per_page=50,
+                max_workers=2,
+                min_notes_if_possible=3,
+                logger=logger,
+                path=file_path,
+
+            ),
+        )
     brain = ToolCallingAgent(
         name="brain",
         model=model,
-        guide=guide(
-            action_act,
-            paragraph_limit=int(task_complexity),
-            sentence_limit=int(task_complexity),
-        ),
-        #initial_guide=(
-        #    fr'([^\.\n]+?\.){{0,{int(task_complexity)}}}?'
-        #    r'\n<[151668]>\n'
-        #    r'Action:\n\{\n  "name": "[^"\n]+?",\n  "arguments": \["[^\]\n\}]+?"\]\n\}'
-        #),
-        #guide=(
-        #    fr'([^\.\n]+?\.){{0,{int(task_complexity)}}}?\n\n'
-        #    r'What have I learned from my actions so far\?'
-        #    fr'([^\.\n]+?\.){{1,{int(task_complexity)}}}?\n\n'
-        #    r'What action do I take now\?'
-        #    fr'([^\.\n]+?\.){{1,{int(task_complexity)}}}?'
-        #    r'\n</think>\n'
-        #    r'Action:\n\{\n  "name": "[^"\n]+?",\n  "arguments": \["[^\]\n\}]+?"\]\n\}'
-        #),
-        #final_guide=(
-        #    r'I must use the \'final_answer\' tool now\.\n'
-        #    fr'([^\.\n]+?\.){{0,{int(task_complexity)}}}?'
-        #    r'\n</think>\n'
-        #    r'Action:\n\{\n  "name": "final_answer",\n  "arguments": \["[^\]\n\}]+?"\]\n\}'
-        #),
-        tools=[NoteToSelf()],
+        guide=LarkReasoningGuide(
+            act=action_act,
+            model_id=model.model_id,
+            reasoning_paragraph_limit=max(1, int(task_complexity // 2)),
+            reasoning_sentence_limit=int(task_complexity),
+        )(),
+        tools=brain_tools,
         managed_agents=[coder, online_researcher],
-        max_steps=max(3, int(task_complexity)),
+        max_steps=max(5, int(task_complexity)),
         verbosity_level=-1,
         logger=logger,
     )
@@ -290,5 +212,5 @@ def run_agents(question, file_path, log_dir, model=model, strict_answers=False):
         " You do not have the ability to watch videos, so if you are asked to find information on a video platform, such as YouTube, read the video description for clues."
     ) + time_prompt
 
-    answer = brain.run(question, additional_args=additional_args, images=images)
+    answer = brain.run(question)
     return answer

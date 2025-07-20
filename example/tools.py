@@ -14,8 +14,8 @@
 
 
 import concurrent.futures
-
 from abc import abstractmethod
+
 from guided_agents import Tool
 
 
@@ -218,7 +218,8 @@ class FileReader(Reader):
 
     def get_md(self, path:str):
         import pathlib
-        from file_loaders import DOCXReader, MLXAudioTranscribe, PPTXReader, ExcelReader, TXTReader
+
+        from file_loaders import DOCXReader, ExcelReader, MLXAudioTranscribe, PPTXReader, TXTReader
         file_loader = None
         file_name = pathlib.Path(path).name
         file_suffix = pathlib.Path(path).suffix

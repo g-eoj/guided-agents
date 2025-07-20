@@ -15,6 +15,7 @@
 
 import concurrent.futures
 
+from abc import abstractmethod
 from guided_agents import Tool
 
 
@@ -87,9 +88,158 @@ class NoteToSelf(Tool):
         return pprint.pformat(note)
 
 
-class WebReader(Tool):
+class Reader(Tool):
+
+    def __init__(
+        self, model, guide=None, max_iterations_per_page=100, max_workers=1, min_notes_if_possible=3, logger=None, path=None
+    ):
+        super().__init__(self)
+        self.model = model
+        self.logger = logger
+        self.path = path
+        self.guide = guide
+        self.max_iterations_per_page = max_iterations_per_page
+        self.max_workers = max_workers
+        self.min_notes_if_possible = min_notes_if_possible
+
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(self.model.model_id)
+        self.text_splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+            separators=["\n#+", "\n\n", "\n", " ", ""],
+            is_separator_regex=True,
+            tokenizer=tokenizer,
+            chunk_overlap=6000,
+            chunk_size=9000
+        )
+
+    def generate(guide, messages, model):
+        return model(
+            messages=messages,
+            guide=guide,
+        ).content
+
+    @abstractmethod
+    def get_md(self, path: str):
+        ...
+
+    def forward(self, path: str, query: str):
+
+        try:
+            if self.path:
+                path = self.path
+            md = self.get_md(path)
+        except ValueError as e:
+            print(e)
+            return str(e)
+
+        messages_per_chunk = []
+        system_text = (
+            "You carefully find and organize information. "
+            "When you find relevant information, you make a note like this: 'Note: ...'"
+        )
+        for chunk in self.text_splitter.split_text(md):
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_text}]},
+                {"role": "user", "content":
+                    [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Look for information relevant to '{query}' in this chunk of markdown:\n\n{chunk}\n\n"
+                                "Now, only using the chunk of markdown, make a note of any relevant information. "
+                                "If you don't find any relevant informtation, then don't make a note. "
+                                "Just say '<not_relevant>'."
+                            )
+                        }
+                    ]
+                }
+            ]
+            messages_per_chunk.append(messages)
+
+        notes = []
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
+        futures = [executor.submit(WebReader.generate, self.guide, messages, self.model) for messages in messages_per_chunk]
+        for future in futures:
+            if future.cancelled():
+                continue
+            note = future.result()
+            if self.logger:
+                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
+                self.logger.info(msg=note, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
+            note = note.split('</think>')[-1].strip()
+            if not note.startswith("<not_relevant>"):
+                notes.append(note)
+            if len(notes) >= self.min_notes_if_possible:
+                executor.shutdown(wait=True, cancel_futures=True)
+
+        if len(notes) > 1:
+            messages = [
+                {"role": "system", "content": [{"type": "text", "text": system_text}]},
+                {"role": "user", "content":
+                    [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Combine these notes to help answer '{query}'. "
+                                "Check if the notes have contradictory information. "
+                                f"If they do, explain the contradictions:\n\n{notes}"
+                            )
+                        }
+                    ]
+                }
+            ]
+            answer = Reader.generate(self.guide, messages, self.model)
+            if self.logger:
+                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
+                self.logger.info(msg=answer, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
+            answer = answer.split('</think>')[-1].lstrip('\\n')
+            return answer
+        elif notes:
+            return notes[0]
+        else:
+            return "No answers found. Please use a different link or rephrase your query."
+
+
+class FileReader(Reader):
+    name = "file_reader"
+    description = "Answers your query about file contents."
+    inputs = {
+        "path": {
+            "type": "string",
+            "description": "The file to use."
+        },
+        "query": {
+            "type": "string",
+            "description": "Ask a simple but detailed question about what you want to learn."
+        }
+    }
+    output_type = "string"
+
+    def get_md(self, path:str):
+        import pathlib
+        from file_loaders import DOCXReader, MLXAudioTranscribe, PPTXReader, ExcelReader, TXTReader
+        file_loader = None
+        file_name = pathlib.Path(path).name
+        file_suffix = pathlib.Path(path).suffix
+        if file_suffix in [".docx"]:
+            file_loader = DOCXReader(path)
+        if file_suffix in [".mp3"]:
+            file_loader = MLXAudioTranscribe(path)
+        if file_suffix in [".pptx"]:
+            file_loader = PPTXReader(path)
+        if file_suffix in [".xlsx"]:
+            file_loader = ExcelReader(path)
+        if file_suffix in [".txt", ".py"]:
+            file_loader = TXTReader(path)
+        if file_loader:
+            return file_loader.forward()
+        return ""
+
+
+class WebReader(Reader):
     name = "web_reader"
-    description = "Converts a web page or PDF to markdown then answers your query about the markdown content."
+    description = "Converts a web page or PDF link to markdown, then answers your query about the markdown content."
     inputs = {
         "path": {
             "type": "string",
@@ -102,17 +252,7 @@ class WebReader(Tool):
     }
     output_type = "string"
 
-    def __init__(self, model, chunk_size=10000, guide='start: /.*/', max_iterations_per_page=100, max_workers=1, min_notes_if_possible=3, logger=None):
-        super().__init__(self)
-        self.model = model
-        self.chunk_size = chunk_size
-        self.logger = logger
-        self.guide = guide
-        self.max_iterations_per_page = max_iterations_per_page
-        self.max_workers = max_workers
-        self.min_notes_if_possible = min_notes_if_possible
-
-    def get_page(self, path:str):
+    def get_md(self, path:str):
         import re
         import time
         from urllib.parse import urlparse
@@ -150,83 +290,3 @@ class WebReader(Tool):
             browser.close()
         md = re.sub(r"\n{3,}", "\n\n", md)
         return md
-
-    def generate(guide, messages, model):
-        return model(
-            messages=messages,
-            guide=guide,
-        ).content
-
-    def forward(self, path: str, query: str):
-
-        try:
-            md = self.get_page(path)
-        except ValueError as e:
-            print(e)
-            return str(e)
-
-        messages_per_chunk = []
-        chunk_size = self.chunk_size
-        chunk_overlap = chunk_size // 2
-        system_text = "You carefully find and organize information."
-        for i in range(min(len(md) // chunk_size + 1, self.max_iterations_per_page)):
-            chunk = "<chunk_start>" + md[i*chunk_size:(i+1)*chunk_size+chunk_overlap] + "<chunk_end>"
-            messages = [
-                {"role": "system", "content": [{"type": "text", "text": system_text}]},
-                {"role": "user", "content":
-                    [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Look for information relevant to '{query}' in this chunk of markdown:\n\n{chunk}\n\n"
-                                f"Now, only using the chunk of markdown, make a note of any relevant information. "
-                                f"If you don't find any relevant informtation, the note should only say '<not_relevant>'."
-                            )
-                        }
-                    ]
-                }
-            ]
-            messages_per_chunk.append(messages)
-
-        notes = []
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
-        futures = [executor.submit(WebReader.generate, self.guide, messages, self.model) for messages in messages_per_chunk]
-        for future in futures:
-            if future.cancelled():
-                continue
-            note = future.result()
-            if self.logger:
-                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
-                self.logger.info(msg=note, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
-            if "<not_relevant>" not in note:
-                note = note.split('</think>')[-1].lstrip('\\n')
-                notes.append(note)
-            if len(notes) >= self.min_notes_if_possible:
-                executor.shutdown(wait=True, cancel_futures=True)
-
-        if len(notes) > 1:
-            messages = [
-                {"role": "system", "content": [{"type": "text", "text": system_text}]},
-                {"role": "user", "content":
-                    [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Combine these notes to help answer '{query}'. "
-                                "Check if the notes have contradictory information. "
-                                f"If they do, explain the contradictions:\n\n{notes}"
-                            )
-                        }
-                    ]
-                }
-            ]
-            answer = WebReader.generate(self.guide, messages, self.model)
-            if self.logger:
-                model_name = f"{type(self.model).__name__} - {(self.model.model_id if hasattr(self.model, 'model_id') else '')}"
-                self.logger.info(msg=answer, extra={"agent": self.name, "model": model_name, "stage": "RESEARCH"})
-            answer = answer.split('</think>')[-1].lstrip('\\n')
-            return answer
-        elif notes:
-            return notes[0]
-        else:
-            return "No answers found. Please use a different link or rephrase your query."

@@ -1072,6 +1072,108 @@ class OpenAIServerModel(Model):
         return ChatMessage(role="assistant", content=text, finish_reason=finish_reason)
 
 
+class GuidedVLLMOpenAI:
+    """A model that extends VLLMOpenAI to support guide classes for structured generation.
+
+    This class wraps the VLLMOpenAI model and adds support for guide classes that define
+    structured output patterns. It can be used with langchain react agents and other
+    langchain components.
+
+    Parameters:
+        model_id (str): The model identifier to use on the vLLM server.
+        api_base (str, optional): The base URL of the vLLM server.
+        api_key (str, optional): The API key for authentication.
+        **kwargs: Additional arguments passed to VLLMOpenAI.
+
+    Example:
+        >>> from guided_agents.models import GuidedVLLMOpenAI
+        >>> from example.guides import RegexReasoningGuide
+        >>>
+        >>> model = GuidedVLLMOpenAI(
+        ...     model_id="Qwen/Qwen3-8B",
+        ...     api_base="http://localhost:8000/v1",
+        ...     api_key="your-api-key"
+        ... )
+        >>>
+        >>> guide = RegexReasoningGuide(act="Final Answer: .+")
+        >>> response = model.invoke("What is 2+2?", guide=guide)
+        >>> print(response)
+    """
+
+    def __init__(self, model_id: str, api_base: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        try:
+            from langchain_community.llms.vllm import VLLMOpenAI
+        except ImportError:
+            raise ImportError(
+                "Please install 'langchain-community' to use GuidedVLLMOpenAI: "
+                "`pip install langchain-community`"
+            )
+
+        # Initialize the underlying VLLMOpenAI model
+        self.model = VLLMOpenAI(
+            model=model_id,
+            base_url=api_base,
+            api_key=api_key,
+            **kwargs
+        )
+        self.model_id = model_id
+
+    def invoke(
+        self,
+        input: Union[str, Any],
+        config: Optional[Any] = None,
+        *,
+        guide: Optional[Union[str, Any]] = None,
+        stop: Optional[List[str]] = None,
+        **kwargs: Any
+    ) -> str:
+        """Invoke the model with optional guide support.
+
+        Args:
+            input: The input text or prompt value.
+            config: Optional configuration for the run.
+            guide: Either a guide string or a guide class instance that has a __call__ method.
+            stop: Optional list of stop sequences.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            The model's response as a string.
+        """
+        # Process guide parameter
+        guide_str = None
+        if guide is not None:
+            if isinstance(guide, str):
+                guide_str = guide
+            elif hasattr(guide, '__call__'):
+                # Guide class instance - call it to get the guide string
+                guide_str = guide()
+            else:
+                raise ValueError(
+                    f"Guide must be a string or an object with a __call__ method, got {type(guide)}"
+                )
+
+        # Prepare the request with guide information
+        if guide_str:
+            # Add guided generation parameters to the model
+            if hasattr(self.model, 'model_kwargs'):
+                if self.model.model_kwargs is None:
+                    self.model.model_kwargs = {}
+                # Add guided regex to extra_body for vLLM
+                extra_body = self.model.model_kwargs.get('extra_body', {})
+                extra_body['guided_regex'] = guide_str
+                self.model.model_kwargs['extra_body'] = extra_body
+            else:
+                # Fallback: pass via kwargs
+                kwargs.setdefault('extra_body', {})['guided_regex'] = guide_str
+
+        # Call the underlying model
+        return self.model.invoke(input, config=config, stop=stop, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate all other attribute access to the underlying VLLMOpenAI model."""
+        return getattr(self.model, name)
+
+
 __all__ = [
     "MessageRole",
     "tool_role_conversions",
@@ -1081,5 +1183,6 @@ __all__ = [
     "MLXVLModel",
     "BaseMLXLogitsProcessor",
     "OpenAIServerModel",
+    "GuidedVLLMOpenAI",
     "ChatMessage",
 ]

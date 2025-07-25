@@ -41,6 +41,11 @@ tools = [
   "sounddevice",
   "tabulate",
 ]
+test = [
+  "pytest>=7.0.0",
+  "pytest-cov>=4.0.0",
+  "pytest-mock>=3.10.0",
+]
 
 [tool.ruff]
 line-length = 119
@@ -56,3 +61,22 @@ lines-after-imports = 2
 
 [tool.setuptools.package-data]
 "guided_agents.prompts" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "--cov=guided_agents",
+  "--cov-report=term-missing",
+  "--cov-report=html",
+  "--cov-report=xml",
+]
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "integration: marks tests as integration tests",
+  "unit: marks tests as unit tests",
+]

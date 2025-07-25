@@ -41,3 +41,11 @@ venv.bak/FEST
 
 # UV
 uv.lock
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/

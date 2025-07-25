@@ -1072,6 +1072,148 @@ class OpenAIServerModel(Model):
         return ChatMessage(role="assistant", content=text, finish_reason=finish_reason)
 
 
+try:
+    from langchain_community.llms.vllm import VLLMOpenAI
+except ImportError:
+    # Create a stub class if langchain_community is not available
+    class VLLMOpenAI:
+        def __init__(self, **kwargs):
+            raise ImportError(
+                "Please install 'langchain-community' to use GuidedVLLMOpenAI: "
+                "`pip install langchain-community`"
+            )
+
+
+class GuidedVLLMOpenAI(VLLMOpenAI):
+    """A model that extends VLLMOpenAI to support guide classes for structured generation.
+
+    This class inherits from VLLMOpenAI and adds support for guide classes that define
+    structured output patterns. It can be used with langchain react agents and other
+    langchain components.
+
+    Parameters:
+        model_id (str): The model identifier to use on the vLLM server.
+        api_base (str, optional): The base URL of the vLLM server.
+        api_key (str, optional): The API key for authentication.
+        **kwargs: Additional arguments passed to VLLMOpenAI.
+
+    Example:
+        >>> from guided_agents.models import GuidedVLLMOpenAI
+        >>> from example.guides import RegexReasoningGuide
+        >>>
+        >>> model = GuidedVLLMOpenAI(
+        ...     model_id="Qwen/Qwen3-8B",
+        ...     api_base="http://localhost:8000/v1",
+        ...     api_key="your-api-key"
+        ... )
+        >>>
+        >>> guide = RegexReasoningGuide(act="Final Answer: .+")
+        >>> response = model.invoke("What is 2+2?", guide=guide)
+        >>> print(response)
+    """
+
+    def __init__(self, model_id: str, api_base: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        # Initialize the parent VLLMOpenAI model
+        super().__init__(
+            model=model_id,
+            base_url=api_base,
+            api_key=api_key,
+            **kwargs
+        )
+
+    def _detect_guide_type(self, guide_str: str) -> str:
+        """Detect whether a guide string is regex or grammar format.
+
+        Args:
+            guide_str: The guide string to analyze
+
+        Returns:
+            Either 'guided_regex' or 'guided_grammar' based on the guide format
+        """
+        # Strong indicators of Lark grammar syntax
+        strong_grammar_indicators = [
+            'start:', '?start:', 'rule:', '?rule:',  # Lark grammar rules
+            ' NL ', 'NL:', 'NL\n',  # Common Lark non-terminal usage
+            ': /',  # Rule definition with regex inside
+            'paragraph:', 'sentence:', 'reason:',  # Common rule names in Lark guides
+        ]
+
+        # Check for strong grammar indicators first
+        if any(indicator in guide_str for indicator in strong_grammar_indicators):
+            return 'guided_grammar'
+
+        # If it has multiple actual lines (not escaped \n) with grammar-like structure
+        lines = [line.strip() for line in guide_str.split('\n') if line.strip()]
+        if len(lines) > 1:
+            # Count lines that look like grammar rules (have : followed by something other than escaped chars)
+            rule_lines = 0
+            for line in lines:
+                if ':' in line and not line.startswith('//'):
+                    # Check if it's a rule definition, not just regex with colon
+                    colon_pos = line.find(':')
+                    if colon_pos > 0:
+                        rule_name = line[:colon_pos].strip()
+                        # Rule names are typically single words or have underscores
+                        if rule_name.replace('_', '').replace('?', '').isalpha():
+                            rule_lines += 1
+
+            # If we have multiple lines that look like grammar rules, it's grammar
+            if rule_lines >= 2:
+                return 'guided_grammar'
+
+        # Otherwise, treat as regex
+        return 'guided_regex'
+
+    def invoke(
+        self,
+        input: Union[str, Any],
+        config: Optional[Any] = None,
+        *,
+        guide: Optional[Union[str, Any]] = None,
+        stop: Optional[List[str]] = None,
+        **kwargs: Any
+    ) -> str:
+        """Invoke the model with optional guide support.
+
+        Args:
+            input: The input text or prompt value.
+            config: Optional configuration for the run.
+            guide: Either a guide string or a guide class instance that has a __call__ method.
+            stop: Optional list of stop sequences.
+            **kwargs: Additional keyword arguments.
+
+        Returns:
+            The model's response as a string.
+        """
+        # Process guide parameter
+        guide_str = None
+        if guide is not None:
+            if isinstance(guide, str):
+                guide_str = guide
+            elif hasattr(guide, '__call__'):
+                # Guide class instance - call it to get the guide string
+                guide_str = guide()
+            else:
+                raise ValueError(
+                    f"Guide must be a string or an object with a __call__ method, got {type(guide)}"
+                )
+
+        # Prepare the request with guide information
+        if guide_str:
+            # Detect guide type and set appropriate parameter
+            guide_param = self._detect_guide_type(guide_str)
+
+            # Pass guided generation parameters via extra_body for vLLM server
+            extra_body = kwargs.get('extra_body', {})
+            extra_body[guide_param] = guide_str
+            kwargs['extra_body'] = extra_body
+
+        # Call the parent's invoke method
+        return super().invoke(input, config=config, stop=stop, **kwargs)
+
+
+
+
 __all__ = [
     "MessageRole",
     "tool_role_conversions",
@@ -1081,5 +1223,6 @@ __all__ = [
     "MLXVLModel",
     "BaseMLXLogitsProcessor",
     "OpenAIServerModel",
+    "GuidedVLLMOpenAI",
     "ChatMessage",
 ]

@@ -1203,9 +1203,10 @@ class GuidedVLLMOpenAI(VLLMOpenAI):
             # Detect guide type and set appropriate parameter
             guide_param = self._detect_guide_type(guide_str)
 
-            # Add guided generation parameters directly to kwargs
-            # These will be passed through to the vLLM server via the completion call
-            kwargs[guide_param] = guide_str
+            # Pass guided generation parameters via extra_body for vLLM server
+            extra_body = kwargs.get('extra_body', {})
+            extra_body[guide_param] = guide_str
+            kwargs['extra_body'] = extra_body
 
         # Call the parent's invoke method
         return super().invoke(input, config=config, stop=stop, **kwargs)

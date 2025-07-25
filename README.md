@@ -27,3 +27,38 @@ It is worth noting prompt caching has a similar effect.
 
 The is repo is a playground, and thus breaking changes are expected.
 That said, please look at the [examples](https://github.com/g-eoj/guided-agents/blob/main/example/core.py) to get an idea of how these ideas come together.
+
+## Development
+
+### Testing
+
+This project uses pytest for testing. To run the tests:
+
+```bash
+# Install test dependencies
+pip install -e ".[test]"
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=guided_agents
+
+# Run specific test file
+pytest tests/test_models.py -v
+```
+
+### Linting
+
+We use ruff for code formatting and linting:
+
+```bash
+# Install ruff
+pip install ruff
+
+# Check for issues
+ruff check src/ tests/
+
+# Format code
+ruff format src/ tests/
+```

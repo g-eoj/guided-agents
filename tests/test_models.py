@@ -26,7 +26,7 @@ class TestModel:
         assert model.last_output_token_count is None
         assert model.kwargs == {}
 
-    @patch('guided_agents.models.get_clean_message_list')
+    @patch("guided_agents.models.get_clean_message_list")
     def test_prepare_completion_kwargs_basic(self, mock_get_clean_message_list):
         """Test _prepare_completion_kwargs with basic parameters"""
         # Setup
@@ -42,7 +42,7 @@ class TestModel:
         assert result["messages"] == messages
         assert result["temperature"] == 0.8
 
-    @patch('guided_agents.models.get_clean_message_list')
+    @patch("guided_agents.models.get_clean_message_list")
     def test_prepare_completion_kwargs_with_stop_sequences(self, mock_get_clean_message_list):
         """Test _prepare_completion_kwargs with stop sequences"""
         # Setup
@@ -58,7 +58,7 @@ class TestModel:
         assert result["stop"] == stop_sequences
         assert result["messages"] == messages
 
-    @patch('guided_agents.models.get_clean_message_list')
+    @patch("guided_agents.models.get_clean_message_list")
     def test_prepare_completion_kwargs_with_guide(self, mock_get_clean_message_list):
         """Test _prepare_completion_kwargs with guide parameter"""
         # Setup
@@ -74,7 +74,7 @@ class TestModel:
         assert result["guide"] == guide
         assert result["messages"] == messages
 
-    @patch('guided_agents.models.get_clean_message_list')
+    @patch("guided_agents.models.get_clean_message_list")
     def test_prepare_completion_kwargs_kwarg_override(self, mock_get_clean_message_list):
         """Test that explicit kwargs override model defaults"""
         # Setup
@@ -86,12 +86,12 @@ class TestModel:
         result = model._prepare_completion_kwargs(
             messages,
             temperature=0.9,  # Override default
-            extra_param="new_value"
+            extra_param="new_value",
         )
 
         # Verify
         assert result["temperature"] == 0.9  # Overridden
-        assert result["max_tokens"] == 50    # From model defaults
+        assert result["max_tokens"] == 50  # From model defaults
         assert result["extra_param"] == "new_value"  # New parameter
         assert result["messages"] == messages
 
@@ -110,7 +110,7 @@ class TestMLXVLMGenerationResult:
             prompt_tps=100.5,
             generation_tps=50.25,
             peak_memory=1024.0,
-            finish_reason="stop"
+            finish_reason="stop",
         )
 
         assert result.text == "Hello world"
@@ -133,7 +133,7 @@ class TestMLXVLMGenerationResult:
             generation_tokens=10,
             prompt_tps=75.0,
             generation_tps=25.0,
-            peak_memory=512.0
+            peak_memory=512.0,
         )
 
         assert result.text == "Hello"
@@ -157,7 +157,7 @@ class TestMLXVLMGenerationResult:
             prompt_tps=1.0,
             generation_tps=1.0,
             peak_memory=100.0,
-            finish_reason="length"
+            finish_reason="length",
         )
 
         assert result.finish_reason == "length"
@@ -173,11 +173,11 @@ class TestModelUtilityIntegration:
         messages = [
             {"role": MessageRole.SYSTEM, "content": "You are a helpful assistant."},
             {"role": MessageRole.USER, "content": "Hello, how are you?"},
-            {"role": MessageRole.ASSISTANT, "content": "I'm doing well, thank you!"}
+            {"role": MessageRole.ASSISTANT, "content": "I'm doing well, thank you!"},
         ]
 
         # This should work without errors when get_clean_message_list is properly mocked
-        with patch('guided_agents.models.get_clean_message_list') as mock_clean:
+        with patch("guided_agents.models.get_clean_message_list") as mock_clean:
             mock_clean.return_value = messages
             result = model._prepare_completion_kwargs(messages)
 

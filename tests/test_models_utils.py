@@ -41,11 +41,7 @@ class TestUtilityFunctions:
         inner = SampleDataClass(name="inner", value=1)
         outer = SampleDataClass(name="outer", value=2, nested=inner)
         result = get_dict_from_nested_dataclasses(outer)
-        expected = {
-            "name": "outer",
-            "value": 2,
-            "nested": {"name": "inner", "value": 1, "nested": None}
-        }
+        expected = {"name": "outer", "value": 2, "nested": {"name": "inner", "value": 1, "nested": None}}
         assert result == expected
 
     def test_get_dict_from_nested_dataclasses_with_ignore_key(self):
@@ -134,9 +130,7 @@ class TestDataClasses:
     def test_chat_message_tool_call_definition_creation(self):
         """Test creating ChatMessageToolCallDefinition"""
         definition = ChatMessageToolCallDefinition(
-            arguments={"param": "value"},
-            name="test_function",
-            description="A test function"
+            arguments={"param": "value"}, name="test_function", description="A test function"
         )
         assert definition.arguments == {"param": "value"}
         assert definition.name == "test_function"
@@ -144,23 +138,13 @@ class TestDataClasses:
 
     def test_chat_message_tool_call_definition_optional_description(self):
         """Test ChatMessageToolCallDefinition with optional description"""
-        definition = ChatMessageToolCallDefinition(
-            arguments={"param": "value"},
-            name="test_function"
-        )
+        definition = ChatMessageToolCallDefinition(arguments={"param": "value"}, name="test_function")
         assert definition.description is None
 
     def test_chat_message_tool_call_creation(self):
         """Test creating ChatMessageToolCall"""
-        definition = ChatMessageToolCallDefinition(
-            arguments={"param": "value"},
-            name="test_function"
-        )
-        tool_call = ChatMessageToolCall(
-            function=definition,
-            id="call_123",
-            type="function"
-        )
+        definition = ChatMessageToolCallDefinition(arguments={"param": "value"}, name="test_function")
+        tool_call = ChatMessageToolCall(function=definition, id="call_123", type="function")
         assert tool_call.function == definition
         assert tool_call.id == "call_123"
         assert tool_call.type == "function"

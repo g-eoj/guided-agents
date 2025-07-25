@@ -1072,10 +1072,22 @@ class OpenAIServerModel(Model):
         return ChatMessage(role="assistant", content=text, finish_reason=finish_reason)
 
 
-class GuidedVLLMOpenAI:
+try:
+    from langchain_community.llms.vllm import VLLMOpenAI
+except ImportError:
+    # Create a stub class if langchain_community is not available
+    class VLLMOpenAI:
+        def __init__(self, **kwargs):
+            raise ImportError(
+                "Please install 'langchain-community' to use GuidedVLLMOpenAI: "
+                "`pip install langchain-community`"
+            )
+
+
+class GuidedVLLMOpenAI(VLLMOpenAI):
     """A model that extends VLLMOpenAI to support guide classes for structured generation.
 
-    This class wraps the VLLMOpenAI model and adds support for guide classes that define
+    This class inherits from VLLMOpenAI and adds support for guide classes that define
     structured output patterns. It can be used with langchain react agents and other
     langchain components.
 
@@ -1101,22 +1113,56 @@ class GuidedVLLMOpenAI:
     """
 
     def __init__(self, model_id: str, api_base: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
-        try:
-            from langchain_community.llms.vllm import VLLMOpenAI
-        except ImportError:
-            raise ImportError(
-                "Please install 'langchain-community' to use GuidedVLLMOpenAI: "
-                "`pip install langchain-community`"
-            )
-
-        # Initialize the underlying VLLMOpenAI model
-        self.model = VLLMOpenAI(
+        # Initialize the parent VLLMOpenAI model
+        super().__init__(
             model=model_id,
             base_url=api_base,
             api_key=api_key,
             **kwargs
         )
-        self.model_id = model_id
+
+    def _detect_guide_type(self, guide_str: str) -> str:
+        """Detect whether a guide string is regex or grammar format.
+
+        Args:
+            guide_str: The guide string to analyze
+
+        Returns:
+            Either 'guided_regex' or 'guided_grammar' based on the guide format
+        """
+        # Strong indicators of Lark grammar syntax
+        strong_grammar_indicators = [
+            'start:', '?start:', 'rule:', '?rule:',  # Lark grammar rules
+            ' NL ', 'NL:', 'NL\n',  # Common Lark non-terminal usage
+            ': /',  # Rule definition with regex inside
+            'paragraph:', 'sentence:', 'reason:',  # Common rule names in Lark guides
+        ]
+        
+        # Check for strong grammar indicators first
+        if any(indicator in guide_str for indicator in strong_grammar_indicators):
+            return 'guided_grammar'
+        
+        # If it has multiple actual lines (not escaped \n) with grammar-like structure
+        lines = [line.strip() for line in guide_str.split('\n') if line.strip()]
+        if len(lines) > 1:
+            # Count lines that look like grammar rules (have : followed by something other than escaped chars)
+            rule_lines = 0
+            for line in lines:
+                if ':' in line and not line.startswith('//'):
+                    # Check if it's a rule definition, not just regex with colon
+                    colon_pos = line.find(':')
+                    if colon_pos > 0:
+                        rule_name = line[:colon_pos].strip()
+                        # Rule names are typically single words or have underscores
+                        if rule_name.replace('_', '').replace('?', '').isalpha():
+                            rule_lines += 1
+            
+            # If we have multiple lines that look like grammar rules, it's grammar
+            if rule_lines >= 2:
+                return 'guided_grammar'
+        
+        # Otherwise, treat as regex
+        return 'guided_regex'
 
     def invoke(
         self,
@@ -1154,24 +1200,17 @@ class GuidedVLLMOpenAI:
 
         # Prepare the request with guide information
         if guide_str:
-            # Add guided generation parameters to the model
-            if hasattr(self.model, 'model_kwargs'):
-                if self.model.model_kwargs is None:
-                    self.model.model_kwargs = {}
-                # Add guided regex to extra_body for vLLM
-                extra_body = self.model.model_kwargs.get('extra_body', {})
-                extra_body['guided_regex'] = guide_str
-                self.model.model_kwargs['extra_body'] = extra_body
-            else:
-                # Fallback: pass via kwargs
-                kwargs.setdefault('extra_body', {})['guided_regex'] = guide_str
+            # Detect guide type and set appropriate parameter
+            guide_param = self._detect_guide_type(guide_str)
 
-        # Call the underlying model
-        return self.model.invoke(input, config=config, stop=stop, **kwargs)
+            # Add guided generation parameters via extra_body without modifying model state
+            extra_body = kwargs.setdefault('extra_body', {})
+            extra_body[guide_param] = guide_str
 
-    def __getattr__(self, name: str) -> Any:
-        """Delegate all other attribute access to the underlying VLLMOpenAI model."""
-        return getattr(self.model, name)
+        # Call the parent's invoke method
+        return super().invoke(input, config=config, stop=stop, **kwargs)
+
+
 
 
 __all__ = [

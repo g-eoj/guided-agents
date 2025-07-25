@@ -1137,11 +1137,11 @@ class GuidedVLLMOpenAI(VLLMOpenAI):
             ': /',  # Rule definition with regex inside
             'paragraph:', 'sentence:', 'reason:',  # Common rule names in Lark guides
         ]
-        
+
         # Check for strong grammar indicators first
         if any(indicator in guide_str for indicator in strong_grammar_indicators):
             return 'guided_grammar'
-        
+
         # If it has multiple actual lines (not escaped \n) with grammar-like structure
         lines = [line.strip() for line in guide_str.split('\n') if line.strip()]
         if len(lines) > 1:
@@ -1156,11 +1156,11 @@ class GuidedVLLMOpenAI(VLLMOpenAI):
                         # Rule names are typically single words or have underscores
                         if rule_name.replace('_', '').replace('?', '').isalpha():
                             rule_lines += 1
-            
+
             # If we have multiple lines that look like grammar rules, it's grammar
             if rule_lines >= 2:
                 return 'guided_grammar'
-        
+
         # Otherwise, treat as regex
         return 'guided_regex'
 
@@ -1203,9 +1203,9 @@ class GuidedVLLMOpenAI(VLLMOpenAI):
             # Detect guide type and set appropriate parameter
             guide_param = self._detect_guide_type(guide_str)
 
-            # Add guided generation parameters via extra_body without modifying model state
-            extra_body = kwargs.setdefault('extra_body', {})
-            extra_body[guide_param] = guide_str
+            # Add guided generation parameters directly to kwargs
+            # These will be passed through to the vLLM server via the completion call
+            kwargs[guide_param] = guide_str
 
         # Call the parent's invoke method
         return super().invoke(input, config=config, stop=stop, **kwargs)
